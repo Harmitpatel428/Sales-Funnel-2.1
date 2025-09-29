@@ -1,50 +1,414 @@
 'use client';
 
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useLeads, Lead } from '../context/LeadContext';
+import { useHeaders } from '../context/HeaderContext';
+import { useColumns } from '../context/ColumnContext';
+import { usePasswords } from '../context/PasswordContext';
 import { useRouter } from 'next/navigation';
-import LeadTable from '../components/LeadTable';
+import EditableTable from '../components/EditableTable';
+import PasswordModal from '../components/PasswordModal';
+import LeadDetailModal from '../components/LeadDetailModal';
+import { validateLeadField, validateDynamicField } from '../hooks/useValidation';
 // XLSX is imported dynamically to avoid turbopack issues
+
+// Shared field mapping constants for import/export
+// @deprecated Use getExportHeaders from '../constants/exportUtils' instead for dynamic headers
+export const EXPORT_HEADERS = [
+  'con.no', 
+  'KVA', 
+  'Connection Date', 
+  'Company Name', 
+  'Client Name', 
+  'Discom',
+  'GIDC',
+  'GST Number',
+  'Unit Type',
+  'Main Mobile Number', 
+  'Lead Status', 
+  'Last Discussion', 
+  'Address',
+  'Next Follow-up Date',
+  'Last Activity Date',
+  'Mobile Number 2', 
+  'Contact Name 2', 
+  'Mobile Number 3', 
+  'Contact Name 3'
+] as const;
+
+// Re-export getExportHeaders for discoverability
+export { getExportHeaders } from '../constants/exportUtils';
+
+// Legacy static mappings - now handled dynamically by buildDynamicFieldMapping()
+// This constant is kept for reference but should not be used in new code
+const LEGACY_IMPORT_FIELD_MAPPINGS = {
+  'con.no': 'consumerNumber',
+  'consumer number': 'consumerNumber',
+  'connection number': 'consumerNumber',
+  'kva': 'kva',
+  'name': 'kva',
+  'full name': 'kva',
+  'lead name': 'kva',
+  'contact name': 'kva',
+  'connection date': 'connectionDate',
+  'company': 'company',
+  'company name': 'company',
+  'organization': 'company',
+  'client name': 'clientName',
+  'client': 'clientName',
+  'discom': 'discom',
+  'gidc': 'gidc',
+  'gst number': 'gstNumber',
+  'gst': 'gstNumber',
+  'unit type': 'unitType',
+  'type': 'unitType',
+  'main mobile number': 'mobileNumber',
+  'mobile number': 'mobileNumber',
+  'phone': 'mobileNumber',
+  'mobile number 2': 'mobileNumber2',
+  'mobile number 3': 'mobileNumber3',
+  'contact name 2': 'contactName2',
+  'contact name 3': 'contactName3',
+  'lead status': 'status',
+  'status': 'status',
+  'last discussion': 'notes',
+  'notes': 'notes',
+  'discussion': 'notes',
+  'address': 'companyLocation',
+  'company location': 'companyLocation',
+  'location': 'companyLocation',
+  'next follow-up date': 'followUpDate',
+  'follow-up date': 'followUpDate',
+  'followup date': 'followUpDate',
+  'last activity date': 'lastActivityDate',
+  'last activity': 'lastActivityDate',
+  'activity date': 'lastActivityDate'
+} as const;
 
 export default function AllLeadsPage() {
   const router = useRouter();
-  const { leads, setLeads } = useLeads();
+  const { leads, setLeads, permanentlyDeleteLead } = useLeads();
+  const { getDisplayName, headerConfig } = useHeaders();
+  const { getVisibleColumns } = useColumns();
+  const { verifyPassword } = usePasswords();
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Get dynamic export headers
+  const getDynamicExportHeaders = useCallback(() => {
+    const visibleColumns = getVisibleColumns();
+    return visibleColumns.map(column => column.label);
+  }, [getVisibleColumns]);
+
+  // Build dynamic field mapping that includes current custom headers and column configuration
+  const buildDynamicFieldMapping = useCallback(() => {
+    const dynamicMapping: Record<string, keyof Lead> = {};
+    
+    // Add current custom header names to the mapping
+    Object.entries(headerConfig).forEach(([fieldKey, customLabel]) => {
+      const labelLower = customLabel.toLowerCase().trim();
+      dynamicMapping[labelLower] = fieldKey as keyof Lead;
+    });
+    
+    // Add current column configuration to the mapping
+    const visibleColumns = getVisibleColumns();
+    visibleColumns.forEach(column => {
+      const labelLower = column.label.toLowerCase().trim();
+      dynamicMapping[labelLower] = column.fieldKey as keyof Lead;
+      
+      // Also add common variations for better matching
+      if (column.type === 'date') {
+        dynamicMapping[labelLower + ' date'] = column.fieldKey as keyof Lead;
+        dynamicMapping['date ' + labelLower] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '')] = column.fieldKey as keyof Lead; // Remove spaces
+        dynamicMapping[labelLower.replace(/\s+/g, '_')] = column.fieldKey as keyof Lead; // Replace spaces with underscores
+        dynamicMapping[labelLower.replace(/\s+/g, '-')] = column.fieldKey as keyof Lead; // Replace spaces with hyphens
+      } else if (column.type === 'phone') {
+        dynamicMapping[labelLower + ' number'] = column.fieldKey as keyof Lead;
+        dynamicMapping['phone ' + labelLower] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '')] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '_')] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '-')] = column.fieldKey as keyof Lead;
+      } else if (column.type === 'email') {
+        dynamicMapping[labelLower + ' email'] = column.fieldKey as keyof Lead;
+        dynamicMapping['email ' + labelLower] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '')] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '_')] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '-')] = column.fieldKey as keyof Lead;
+      } else if (column.type === 'number') {
+        dynamicMapping[labelLower + ' number'] = column.fieldKey as keyof Lead;
+        dynamicMapping['number ' + labelLower] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '')] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '_')] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '-')] = column.fieldKey as keyof Lead;
+      } else {
+        // For text and select fields, add common variations
+        dynamicMapping[labelLower.replace(/\s+/g, '')] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '_')] = column.fieldKey as keyof Lead;
+        dynamicMapping[labelLower.replace(/\s+/g, '-')] = column.fieldKey as keyof Lead;
+      }
+    });
+
+    // Add legacy static mappings for backward compatibility
+    // These will be used when no dynamic mapping is found
+    const legacyMappings = {
+      // Consumer Number variations
+      'con.no': 'consumerNumber',
+      'con.no.': 'consumerNumber',
+      'connection number': 'consumerNumber',
+      'consumer number': 'consumerNumber',
+      'consumernumber': 'consumerNumber',
+      
+      // KVA/Name variations
+      'kva': 'kva',
+      'name': 'kva',
+      'full name': 'kva',
+      'lead name': 'kva',
+      'contact name': 'kva',
+      
+      // Connection Date variations
+      'connection date': 'connectionDate',
+      'connectiondate': 'connectionDate',
+      
+      // Company variations
+      'company': 'company',
+      'company name': 'company',
+      'organization': 'company',
+      
+      // Company Location variations
+      'company location': 'companyLocation',
+      'companylocation': 'companyLocation',
+      'location': 'companyLocation',
+      'address': 'companyLocation',
+      
+      // Client Name variations
+      'client name': 'clientName',
+      'clientname': 'clientName',
+      'client': 'clientName',
+      
+      // Mobile Number variations
+      'mo.no': 'mobileNumber',
+      'mo.no.': 'mobileNumber',
+      'mo .no': 'mobileNumber',
+      'mo .no.': 'mobileNumber',
+      'mobile number': 'mobileNumber',
+      'mobilenumber': 'mobileNumber',
+      'mobile': 'mobileNumber',
+      'phone': 'mobileNumber',
+      'phone number': 'mobileNumber',
+      'contact phone': 'mobileNumber',
+      'telephone': 'mobileNumber',
+      'main mobile number': 'mobileNumber',
+      
+      // Unit Type variations
+      'unit type': 'unitType',
+      'unittype': 'unitType',
+      'type': 'unitType',
+      
+      // Status variations
+      'status': 'status',
+      'lead status': 'status',
+      'current status': 'status',
+      'leadstatus': 'status',
+      'lead_status': 'status',
+      'lead-status': 'status',
+      
+      // Follow-up Date variations
+      'follow up date': 'followUpDate',
+      'followup date': 'followUpDate',
+      'follow_up_date': 'followUpDate',
+      'follow-up-date': 'followUpDate',
+      'followup': 'followUpDate',
+      'follow_up': 'followUpDate',
+      'follow-up': 'followUpDate',
+      'next follow up': 'followUpDate',
+      'nextfollowup': 'followUpDate',
+      'next_follow_up': 'followUpDate',
+      'next-follow-up': 'followUpDate',
+      'next call date': 'followUpDate',
+      'nextcalldate': 'followUpDate',
+      'next_call_date': 'followUpDate',
+      'next-call-date': 'followUpDate',
+      'callback date': 'followUpDate',
+      'callbackdate': 'followUpDate',
+      'callback_date': 'followUpDate',
+      'callback-date': 'followUpDate',
+      'reminder date': 'followUpDate',
+      'reminderdate': 'followUpDate',
+      'reminder_date': 'followUpDate',
+      'reminder-date': 'followUpDate',
+      
+      // Last Activity Date variations
+      'last activity date': 'lastActivityDate',
+      'lastactivitydate': 'lastActivityDate',
+      'last_activity_date': 'lastActivityDate',
+      'last activity': 'lastActivityDate',
+      'lastactivity': 'lastActivityDate',
+      'last_activity': 'lastActivityDate',
+      'activity date': 'lastActivityDate',
+      'activitydate': 'lastActivityDate',
+      'activity_date': 'lastActivityDate',
+      'last call date': 'lastActivityDate',
+      'lastcalldate': 'lastActivityDate',
+      'last_call_date': 'lastActivityDate',
+      'last contact date': 'lastActivityDate',
+      'lastcontactdate': 'lastActivityDate',
+      'last_contact_date': 'lastActivityDate',
+      
+      // Notes variations
+      'notes': 'notes',
+      'discussion': 'notes',
+      'last discussion': 'notes',
+      'lastdiscussion': 'notes',
+      'last_discussion': 'notes',
+      'last-discussion': 'notes',
+      'call notes': 'notes',
+      'comments': 'notes',
+      'comment': 'notes',
+      'description': 'notes',
+      
+      // GIDC variations
+      'gidc': 'gidc',
+      
+      // Discom variations
+      'discom': 'discom',
+      
+      // GST Number variations
+      'gst number': 'gstNumber',
+      'gstnumber': 'gstNumber',
+      'gst_number': 'gstNumber',
+      'gst': 'gstNumber',
+      
+      // Final Conclusion variations
+      'final conclusion': 'finalConclusion',
+      'finalconclusion': 'finalConclusion',
+      'final_conclusion': 'finalConclusion',
+      'conclusion': 'finalConclusion'
+    };
+
+    // Add legacy mappings to dynamic mapping
+    Object.entries(legacyMappings).forEach(([header, field]) => {
+      if (!dynamicMapping[header]) {
+        dynamicMapping[header] = field as keyof Lead;
+      }
+    });
+    
+    console.log('🔍 Dynamic field mapping built:', dynamicMapping);
+    console.log('🔍 Total mappings:', Object.keys(dynamicMapping).length);
+    return dynamicMapping;
+  }, [headerConfig, getVisibleColumns]);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [showLeadModal, setShowLeadModal] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  
-  // Password protection states
-  const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [password, setPassword] = useState('');
-  const [leadToDelete, setLeadToDelete] = useState<Lead | null>(null);
-  const [passwordError, setPasswordError] = useState('');
-  
-  // Password change states
-  const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [passwordChangeError, setPasswordChangeError] = useState('');
   
   // Bulk delete states
   const [selectedLeads, setSelectedLeads] = useState<Set<string>>(new Set());
-  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
-  const [bulkDeletePassword, setBulkDeletePassword] = useState('');
-  const [bulkDeleteError, setBulkDeleteError] = useState('');
+  
+  // Password modal states
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [password, setPassword] = useState('');
+  const [leadToDelete, setLeadToDelete] = useState<Lead | null>(null);
+  const [pendingDeleteOperation, setPendingDeleteOperation] = useState<{
+    type: 'single' | 'bulk';
+    lead?: Lead;
+    leadIds?: string[];
+  } | null>(null);
   
   // Toast notification states
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('info');
   
-  // Password for deletion (stored in localStorage)
-  const [DELETE_PASSWORD, setDELETE_PASSWORD] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('deletePassword') || 'admin123';
+  // Editable table states
+  const [validationErrors, setValidationErrors] = useState<Record<string, Record<string, string>>>({});
+
+  // Show toast notification
+  const showToastNotification = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToastMessage(message);
+    setToastType(type);
+    setShowToast(true);
+    
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      setShowToast(false);
+    }, 3000);
+  }, []);
+
+  // Handle cell update
+  const handleCellUpdate = useCallback(async (leadId: string, field: string, value: string) => {
+    try {
+      // Find the lead
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) {
+        throw new Error('Lead not found');
+      }
+
+      // Get current column configuration to validate dynamic fields
+      const visibleColumns = getVisibleColumns();
+      const columnConfig = visibleColumns.find(col => col.fieldKey === field);
+      
+      console.log('🔧 Cell update debug:', { leadId, field, value, columnConfig });
+
+      // Validate the field (including custom columns)
+      const error = validateLeadField(field as keyof Lead, value, lead, columnConfig);
+      if (error) {
+        // Set validation error
+        setValidationErrors(prev => ({
+          ...prev,
+          [leadId]: {
+            ...prev[leadId],
+            [field]: error
+          }
+        }));
+        throw new Error(error);
+      }
+
+      // Clear validation error if exists
+      setValidationErrors(prev => {
+        const newErrors = { ...prev };
+        if (newErrors[leadId]) {
+          delete newErrors[leadId][field];
+          if (Object.keys(newErrors[leadId]).length === 0) {
+            delete newErrors[leadId];
+          }
+        }
+        return newErrors;
+      });
+
+      // Handle special field formatting
+      let formattedValue = value;
+      if (field === 'mobileNumbers') {
+        // Parse JSON string for mobile numbers
+        try {
+          const mobileNumbers = JSON.parse(value);
+          formattedValue = mobileNumbers;
+        } catch {
+          throw new Error('Invalid mobile numbers format');
+        }
+      } else if (columnConfig?.type === 'date' && value) {
+        // Format date fields consistently
+        formattedValue = formatDateToDDMMYYYY(value);
+      }
+
+      // Update the lead with proper field access using safe property assignment
+      const updatedLead = {
+        ...lead,
+        [field]: formattedValue,
+        lastActivityDate: new Date().toLocaleDateString('en-GB') // DD-MM-YYYY format
+      } as Lead & Record<string, any>; // Allow dynamic properties
+
+      // Only touch activity for important field changes
+      const shouldTouchActivity = ['status', 'followUpDate', 'notes'].includes(field);
+      setLeads(prev => prev.map(l => l.id === leadId ? {
+        ...updatedLead,
+        lastActivityDate: shouldTouchActivity ? updatedLead.lastActivityDate : l.lastActivityDate
+      } : l));
+      showToastNotification('Lead updated successfully!', 'success');
+    } catch (error) {
+      console.error('Error updating cell:', error);
+      showToastNotification(error instanceof Error ? error.message : 'Failed to update lead', 'error');
+      throw error;
     }
-    return 'admin123';
-  });
+  }, [leads, setLeads, showToastNotification, getVisibleColumns]);
 
   // Helper function to format date to DD-MM-YYYY
   const formatDateToDDMMYYYY = (dateString: string): string => {
@@ -142,20 +506,23 @@ export default function AllLeadsPage() {
   // Modal functions
   const openModal = (lead: Lead) => {
     setSelectedLead(lead);
-    setIsModalOpen(true);
+    setShowLeadModal(true);
+    document.body.style.overflow = 'hidden';
   };
 
   const closeModal = () => {
     setSelectedLead(null);
-    setIsModalOpen(false);
+    setShowLeadModal(false);
+    document.body.style.overflow = 'unset';
   };
 
   // Handle ESC key to close modal
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (isModalOpen) {
-          closeModal();
+        if (showLeadModal) {
+          setShowLeadModal(false);
+          document.body.style.overflow = 'unset';
         }
         if (showPasswordModal) {
           setShowPasswordModal(false);
@@ -169,7 +536,7 @@ export default function AllLeadsPage() {
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isModalOpen, showPasswordModal]);
+  }, [showLeadModal, showPasswordModal]);
 
   // Handle modal return from edit form
   useEffect(() => {
@@ -182,7 +549,8 @@ export default function AllLeadsPage() {
       const lead = leads.find(l => l.id === leadId);
       if (lead) {
         setSelectedLead(lead);
-        setIsModalOpen(true);
+        setShowLeadModal(true);
+        document.body.style.overflow = 'hidden';
       }
       
       // Clean up URL parameters
@@ -232,67 +600,33 @@ export default function AllLeadsPage() {
     window.open(whatsappUrl, '_blank');
   };
 
-  // Password protection functions (currently unused but kept for future functionality)
-  // const handleDeleteClick = (lead: Lead) => {
-  //   setLeadToDelete(lead);
-  //   setShowPasswordModal(true);
-  //   setPassword('');
-  //   setPasswordError('');
-  // };
+  // Password protection functions using centralized PasswordContext
+  const handleDeleteClick = (lead: Lead) => {
+    setPendingDeleteOperation({ type: 'single', lead });
+    setShowPasswordModal(true);
+  };
 
-
-  const handlePasswordSubmit = () => {
-    if (password === DELETE_PASSWORD) {
-      if (leadToDelete) {
-        // Always permanently delete when deleting from All Leads page
-        setLeads(prev => prev.filter(lead => lead.id !== leadToDelete.id));
-        setShowPasswordModal(false);
-        setLeadToDelete(null);
-        setPassword('');
-        setPasswordError('');
-      }
-    } else {
-      setPasswordError('Incorrect password. Please try again.');
+  const handlePasswordSuccess = () => {
+    if (!pendingDeleteOperation) return;
+    
+    if (pendingDeleteOperation.type === 'single' && pendingDeleteOperation.lead) {
+      // Permanently delete when deleting from All Leads page
+      permanentlyDeleteLead(pendingDeleteOperation.lead.id);
+      showToastNotification('Lead permanently deleted', 'success');
+    } else if (pendingDeleteOperation.type === 'bulk' && pendingDeleteOperation.leadIds) {
+      // Permanently delete all selected leads
+      pendingDeleteOperation.leadIds.forEach(leadId => permanentlyDeleteLead(leadId));
+      setSelectedLeads(new Set());
+      showToastNotification(`${pendingDeleteOperation.leadIds.length} leads permanently deleted`, 'success');
     }
+    
+    setShowPasswordModal(false);
+    setPendingDeleteOperation(null);
   };
 
   const handlePasswordCancel = () => {
     setShowPasswordModal(false);
-    setLeadToDelete(null);
-    setPassword('');
-    setPasswordError('');
-  };
-
-  // Password change functions
-  const handlePasswordChangeSubmit = () => {
-    if (currentPassword !== DELETE_PASSWORD) {
-      setPasswordChangeError('Current password is incorrect.');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setPasswordChangeError('New passwords do not match.');
-      return;
-    }
-    if (newPassword.length < 4) {
-      setPasswordChangeError('New password must be at least 4 characters long.');
-      return;
-    }
-    
-    setDELETE_PASSWORD(newPassword);
-    localStorage.setItem('deletePassword', newPassword);
-    setShowPasswordChangeModal(false);
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
-    setPasswordChangeError('');
-  };
-
-  const handlePasswordChangeCancel = () => {
-    setShowPasswordChangeModal(false);
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
-    setPasswordChangeError('');
+    setPendingDeleteOperation(null);
   };
 
   // Bulk delete functions
@@ -316,9 +650,8 @@ export default function AllLeadsPage() {
 
   const handleBulkDeleteClick = () => {
     if (selectedLeads.size === 0) return;
-    setShowBulkDeleteModal(true);
-    setBulkDeletePassword('');
-    setBulkDeleteError('');
+    setPendingDeleteOperation({ type: 'bulk', leadIds: Array.from(selectedLeads) });
+    setShowPasswordModal(true);
   };
 
   // Bulk restore function
@@ -347,35 +680,24 @@ export default function AllLeadsPage() {
   });
 
 
-  const handleBulkDeleteSubmit = () => {
-    if (bulkDeletePassword !== DELETE_PASSWORD) {
-      setBulkDeleteError('Incorrect password. Please try again.');
-      return;
-    }
-    
-    // Always permanently delete all selected leads
-    setLeads(prev => prev.filter(lead => !selectedLeads.has(lead.id)));
-    
-    setShowBulkDeleteModal(false);
-    setSelectedLeads(new Set());
-    setBulkDeletePassword('');
-    setBulkDeleteError('');
-  };
 
-  const handleBulkDeleteCancel = () => {
-    setShowBulkDeleteModal(false);
-    setBulkDeletePassword('');
-    setBulkDeleteError('');
-  };
-
-  // Secret password change access
-  const handleSecretClick = () => {
-    setShowPasswordChangeModal(true);
-  };
 
   // Handle lead click
   const handleLeadClick = (lead: Lead) => {
     openModal(lead);
+  };
+
+  // Handle edit lead
+  const handleEditLead = (lead: Lead) => {
+    // Store the lead data in localStorage for editing
+    localStorage.setItem('editingLead', JSON.stringify(lead));
+    // Store modal return data for ESC key functionality
+    localStorage.setItem('modalReturnData', JSON.stringify({
+      sourcePage: 'all-leads',
+      leadId: lead.id
+    }));
+    // Navigate to add-lead page with a flag to indicate we're editing
+    router.push(`/add-lead?mode=edit&id=${lead.id}&from=all-leads`);
   };
 
   // File input ref for import
@@ -471,7 +793,7 @@ export default function AllLeadsPage() {
     return '';
   };
 
-  // Set default values for required fields
+  // Set default values for required fields and validate custom fields
   const setDefaultValues = (lead: Partial<Lead>) => {
     if (!lead.status) lead.status = 'New';
     if (!lead.unitType) lead.unitType = 'New';
@@ -483,9 +805,64 @@ export default function AllLeadsPage() {
     if (!lead.mandateStatus) lead.mandateStatus = 'Pending';
     if (!lead.documentStatus) lead.documentStatus = 'Pending Documents';
     if (!lead.mobileNumbers) lead.mobileNumbers = [];
+    
+    // Apply column-based defaults for all visible columns and validate custom fields
+    const visibleColumns = getVisibleColumns();
+    const validationErrors: string[] = [];
+    
+    visibleColumns.forEach(column => {
+      const currentValue = (lead as any)[column.fieldKey];
+      
+      // Set default value if undefined
+      if (currentValue === undefined) {
+        let defaultValue = column.defaultValue;
+        
+        if (defaultValue === undefined) {
+          switch (column.type) {
+            case 'date':
+              defaultValue = new Date().toLocaleDateString('en-GB');
+              break;
+            case 'number':
+              defaultValue = 0;
+              break;
+            case 'phone':
+            case 'email':
+            case 'text':
+              defaultValue = '';
+              break;
+            case 'select':
+              defaultValue = column.options?.[0] || '';
+              break;
+            default:
+              defaultValue = '';
+          }
+        }
+        
+        (lead as any)[column.fieldKey] = defaultValue;
+      } else {
+        // Validate existing values for custom fields
+        const validationError = validateDynamicField(column.fieldKey, currentValue, column.type, {
+          required: column.required,
+          maxLength: column.maxLength,
+          min: column.min,
+          max: column.max,
+          options: column.options,
+          allowPast: column.allowPast
+        });
+        
+        if (validationError) {
+          validationErrors.push(`${column.label}: ${validationError}`);
+        }
+      }
+    });
+    
+    // Add validation errors to lead if any
+    if (validationErrors.length > 0) {
+      (lead as any).validationErrors = validationErrors;
+    }
   };
 
-  // Map header to lead field - updated to match your Excel format exactly
+  // Map header to lead field - enhanced to support custom headers
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapHeaderToField = (lead: Partial<Lead>, header: string, value: any) => {
     const headerLower = header.toLowerCase().trim();
@@ -495,26 +872,62 @@ export default function AllLeadsPage() {
     console.log('Value length: ' + (value ? value.toString().length : 'undefined'));
     console.log('Is empty: ' + (!value || value === '' || value === null || value === undefined));
     console.log('Processing header: ' + headerLower);
+
+    // First, try to map using dynamic field mapping (includes custom headers and columns)
+    const dynamicMapping = buildDynamicFieldMapping();
+    const fieldKey = dynamicMapping[headerLower];
     
-    // Debug for exact export format headers
-    if (header === 'Mobile Number 2' || header === 'Contact Name 2') {
-      console.log('🎯 EXACT EXPORT FORMAT HEADER DETECTED:', header);
-      console.log('🎯 HEADER LOWER:', headerLower);
-      console.log('🎯 VALUE:', value);
+    if (fieldKey) {
+      console.log('🎯 DYNAMIC MAPPING FOUND:', headerLower, '->', fieldKey);
+      
+      // Get column configuration for type-specific handling
+      const visibleColumns = getVisibleColumns();
+      const columnConfig = visibleColumns.find(col => col.fieldKey === fieldKey);
+      
+      // Apply the value based on field type
+      if (columnConfig?.type === 'date' || 
+          ['connectionDate', 'lastActivityDate', 'followUpDate'].includes(fieldKey)) {
+        // Handle date fields
+        if (value && value !== '') {
+          const dateValue = isExcelDate(value) ? convertExcelDate(value) : String(value);
+          (lead as any)[fieldKey] = dateValue;
+          console.log('Mapped date field:', fieldKey, '=', dateValue);
+        }
+      } else if (columnConfig?.type === 'number') {
+        // Handle number fields
+        if (value && value !== '') {
+          const numValue = Number(value);
+          if (!isNaN(numValue)) {
+            (lead as any)[fieldKey] = numValue;
+            console.log('Mapped number field:', fieldKey, '=', numValue);
+          } else {
+            (lead as any)[fieldKey] = String(value);
+            console.log('Mapped number field as string:', fieldKey, '=', String(value));
+          }
+        }
+      } else if (columnConfig?.type === 'phone') {
+        // Handle phone fields - clean numeric input
+        if (value && value !== '') {
+          const phoneValue = String(value).replace(/[^0-9]/g, '');
+          (lead as any)[fieldKey] = phoneValue;
+          console.log('Mapped phone field:', fieldKey, '=', phoneValue);
+        }
+      } else if (columnConfig?.type === 'email') {
+        // Handle email fields
+        if (value && value !== '') {
+          (lead as any)[fieldKey] = String(value).toLowerCase().trim();
+          console.log('Mapped email field:', fieldKey, '=', String(value));
+        }
+      } else {
+        // Handle other fields as strings
+        (lead as any)[fieldKey] = String(value);
+        console.log('Mapped field:', fieldKey, '=', String(value));
+      }
+      return; // Exit early if mapping found
     }
-    
-    // Check if this is a status-related header
-    const isStatusHeader = headerLower.includes('status') || 
-                          headerLower === 'status' || 
-                          headerLower === 'lead status' || 
-                          headerLower === 'current status' ||
-                          headerLower === 'leadstatus' ||
-                          headerLower === 'lead_status' ||
-                          headerLower === 'lead-status';
-    
-    if (isStatusHeader) {
-      console.log('🎯 STATUS HEADER DETECTED:', headerLower);
-    }
+
+    // If no dynamic mapping found, try legacy static mappings for backward compatibility
+    console.log('⚠️ No dynamic mapping found, trying legacy mappings for:', headerLower);
     
     // Special handling for discom headers - check if header contains "discom" in any case
     if (headerLower.includes('discom')) {
@@ -530,47 +943,9 @@ export default function AllLeadsPage() {
       return; // Exit early to avoid switch statement
     }
     
+    // Handle complex mobile number array logic that can't be easily mapped dynamically
     switch (headerLower) {
-      // Your Excel column headers - exact matches
-      case 'con.no':
-      case 'con.no.':
-      case 'connection number':
-      case 'consumer number':
-      case 'consumernumber':
-        lead.consumerNumber = String(value);
-        break;
-      case 'kva':
-      case 'name':
-      case 'full name':
-      case 'lead name':
-      case 'contact name':
-        lead.kva = String(value);
-        break;
-      case 'connection date':
-      case 'connectiondate':
-      case 'email':
-      case 'email address':
-      case 'contact email':
-        console.log(`Setting connection date to: "${value}" (original: ${value})`);
-        lead.connectionDate = convertExcelDate(value);
-        console.log(`Connection date after setting: "${lead.connectionDate}"`);
-        break;
-      case 'company':
-      case 'company name':
-      case 'organization':
-        lead.company = String(value);
-        break;
-      case 'company location':
-      case 'companylocation':
-      case 'location':
-      case 'address':
-        lead.companyLocation = String(value);
-        break;
-      case 'client name':
-      case 'clientname':
-      case 'client':
-        lead.clientName = String(value);
-        break;
+      // Main mobile number - complex array logic
       case 'mo.no':
       case 'mo.no.':
       case 'mo .no':
@@ -614,6 +989,7 @@ export default function AllLeadsPage() {
           console.log('Updated main mobile number in mobileNumbers array:', lead.mobileNumbers[0]);
         }
         break;
+      // Mobile Number 2 - complex array logic
       case 'mobile number 2':
       case 'mobile number2':
       case 'mobile2':
@@ -624,16 +1000,10 @@ export default function AllLeadsPage() {
       case 'mobile no2':
       case 'contact number 2':
       case 'contact no 2':
-      case 'mobile no 2':
-      case 'mobile no. 2':
-      case 'mobile no2':
       case 'mobile 2':
-      case 'mobile2':
       case 'phone no 2':
       case 'phone no. 2':
       case 'phone no2':
-      case 'phone 2':
-      case 'phone2':
       case 'tel 2':
       case 'tel2':
       case 'telephone 2':
@@ -682,6 +1052,7 @@ export default function AllLeadsPage() {
         
         console.log('Final mobileNumbers array:', lead.mobileNumbers);
         break;
+      // Mobile Number 3 - complex array logic
       case 'mobile number 3':
       case 'mobile number3':
       case 'mobile3':
@@ -710,9 +1081,10 @@ export default function AllLeadsPage() {
           id: '3', 
           number: String(value), 
           name: lead.mobileNumbers[2]?.name || '', 
-                  isMain: false
+          isMain: false 
         };
         break;
+      // Contact Name 2 - complex array logic
       case 'contact name 2':
       case 'contact name2':
       case 'contact2':
@@ -722,15 +1094,12 @@ export default function AllLeadsPage() {
       case 'person name 2':
       case 'contact person2':
       case 'contact 2':
-      case 'contact2':
       case 'person 2':
       case 'person2':
       case 'contact person name 2':
       case 'contact person name2':
       case 'person contact 2':
       case 'person contact2':
-      case 'contact person name 2':
-      case 'contact person name2':
         console.log('*** CONTACT NAME 2 MAPPING ***');
         console.log('Setting contact name 2 to: "' + String(value) + '"');
         console.log('Current lead.mobileNumber:', lead.mobileNumber);
@@ -775,6 +1144,7 @@ export default function AllLeadsPage() {
         
         console.log('Final mobileNumbers array:', lead.mobileNumbers);
         break;
+      // Contact Name 3 - complex array logic
       case 'contact name 3':
       case 'contact name3':
       case 'contact3':
@@ -804,6 +1174,7 @@ export default function AllLeadsPage() {
           isMain: false 
         };
         break;
+      // Status - complex mapping logic
       case 'lead status':
       case 'leadstatus':
       case 'status':
@@ -828,9 +1199,9 @@ export default function AllLeadsPage() {
         } else if (statusValue === 'deal close' || statusValue === 'dealclose' || statusValue === 'deal_close') {
           lead.status = 'Deal Close';
           console.log('✅ Mapped to Deal Close');
-        } else if (statusValue === 'work alloted' || statusValue === 'workalloted' || statusValue === 'work_alloted') {
+        } else if (statusValue === 'work alloted' || statusValue === 'workalloted' || statusValue === 'work_alloted' || statusValue === 'wao') {
           lead.status = 'Work Alloted';
-          console.log('✅ Mapped to Work Alloted');
+          console.log(`✅ Mapped "${statusValue}" to Work Alloted (will display as WAO)`);
         } else if (statusValue === 'hotlead' || statusValue === 'hot lead' || statusValue === 'hot_lead') {
           lead.status = 'Hotlead';
           console.log('✅ Mapped to Hotlead');
@@ -860,9 +1231,9 @@ export default function AllLeadsPage() {
           } else if (statusValue.includes('deal') || statusValue.includes('close')) {
               lead.status = 'Deal Close';
             console.log('✅ Flexible mapping: Deal Close');
-          } else if (statusValue.includes('work') || statusValue.includes('allot')) {
+          } else if (statusValue.includes('work') || statusValue.includes('allot') || statusValue.includes('wao')) {
             lead.status = 'Work Alloted';
-            console.log('✅ Flexible mapping: Work Alloted');
+            console.log(`✅ Flexible mapping: "${statusValue}" -> Work Alloted (will display as WAO)`);
           } else if (statusValue.includes('hot')) {
             lead.status = 'Hotlead';
             console.log('✅ Flexible mapping: Hotlead');
@@ -881,6 +1252,7 @@ export default function AllLeadsPage() {
           }
         }
         break;
+      // Unit Type - complex mapping logic
       case 'unit type':
       case 'unittype':
       case 'unit_type':
@@ -898,10 +1270,12 @@ export default function AllLeadsPage() {
           lead.unitType = 'Other';
           console.log('✅ Mapped to Other');
         } else {
-          lead.unitType = 'New'; // Default fallback
-          console.log('⚠️ Default mapping: New');
+          // Allow custom unit types
+          lead.unitType = String(value).trim();
+          console.log('✅ Custom unit type:', lead.unitType);
         }
         break;
+      // Follow-up Date - complex date logic
       case 'follow-up date':
       case 'followup date':
       case 'follow_up_date':
@@ -918,7 +1292,6 @@ export default function AllLeadsPage() {
       case 'next followup date':
       case 'next_follow_up_date':
       case 'nextfollowupdate':
-      case 'followupdate':
       case 'follow_up':
       case 'followup_date':
       case 'next_followup':
@@ -929,6 +1302,7 @@ export default function AllLeadsPage() {
         lead.followUpDate = convertExcelDate(value);
         console.log('Follow-up date after setting: "' + lead.followUpDate + '"');
         break;
+      // Last Activity Date - complex date logic
       case 'last activity date':
       case 'lastactivitydate':
       case 'last_activity_date':
@@ -950,6 +1324,7 @@ export default function AllLeadsPage() {
         lead.lastActivityDate = convertExcelDate(value);
         console.log('Last activity date after setting: "' + lead.lastActivityDate + '"');
         break;
+      // Notes - complex append logic
       case 'notes':
       case 'discussion':
       case 'last discussion':
@@ -967,6 +1342,7 @@ export default function AllLeadsPage() {
           lead.notes = String(value);
         }
         break;
+      // Simple field mappings (now handled by dynamic mapping, but kept for backward compatibility)
       case 'gidc':
         lead.gidc = String(value);
         break;
@@ -1038,6 +1414,9 @@ export default function AllLeadsPage() {
 
     const headers = lines[0]?.split(',').map(h => h.trim().replace(/"/g, '')) || [];
     console.log('CSV Headers:', headers);
+    
+    // Show import mapping preview for CSV
+    const mappingPreview = showImportMappingPreview(headers);
 
     return lines.slice(1).map((line) => {
       const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
@@ -1104,6 +1483,9 @@ export default function AllLeadsPage() {
             
             const headers = jsonData[0] as string[];
             console.log('Excel Headers:', headers);
+            
+            // Show import mapping preview
+            const mappingPreview = showImportMappingPreview(headers);
             
             const leads = jsonData.slice(1).map((row: unknown, index: number) => {
               const rowArray = row as any[];
@@ -1176,6 +1558,58 @@ export default function AllLeadsPage() {
     }
   };
 
+  // Show import mapping preview
+  const showImportMappingPreview = (headers: string[]) => {
+    const dynamicMapping = buildDynamicFieldMapping();
+    const visibleColumns = getVisibleColumns();
+    
+    console.log('📊 Import Mapping Preview:');
+    console.log('Excel Headers:', headers);
+    console.log('Available Mappings:', Object.keys(dynamicMapping).length);
+    
+    const mappingPreview = headers.map(header => {
+      const headerLower = header.toLowerCase().trim();
+      const mappedField = dynamicMapping[headerLower];
+      const columnConfig = visibleColumns.find(col => col.fieldKey === mappedField);
+      
+      return {
+        excelHeader: header,
+        mappedField: mappedField || 'UNMAPPED',
+        columnLabel: columnConfig?.label || 'Unknown',
+        columnType: columnConfig?.type || 'text',
+        isMapped: !!mappedField
+      };
+    });
+    
+    console.log('📊 Mapping Preview:', mappingPreview);
+    
+    const mappedCount = mappingPreview.filter(m => m.isMapped).length;
+    const unmappedCount = mappingPreview.filter(m => !m.isMapped).length;
+    
+    console.log(`📊 Mapping Summary: ${mappedCount} mapped, ${unmappedCount} unmapped`);
+    
+    // Show user-visible summary of unmapped headers
+    const unmappedHeaders = mappingPreview.filter(m => !m.isMapped);
+    if (unmappedHeaders.length > 0) {
+      const unmappedList = unmappedHeaders.map(h => h.excelHeader).join(', ');
+      const availableColumns = visibleColumns.map(col => col.label).join(', ');
+      
+      const message = `⚠️ ${unmappedCount} headers could not be mapped: ${unmappedList}\n\nAvailable column labels: ${availableColumns}\n\nConsider renaming headers to match current column labels for better import results.`;
+      
+      // Show as toast notification
+      setShowToast(true);
+      setToastMessage(message);
+      setToastType('info');
+      
+      // Auto-hide after 8 seconds for longer message
+      setTimeout(() => {
+        setShowToast(false);
+      }, 8000);
+    }
+    
+    return mappingPreview;
+  };
+
   // Handle Excel/CSV import
   const handleFileImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     console.log('=== EXCEL IMPORT STARTED ===');
@@ -1201,9 +1635,70 @@ export default function AllLeadsPage() {
 
       console.log('Parsed leads:', leads);
 
-      // Filter out leads without client names
-      const validLeads = leads.filter(lead => lead.clientName && lead.clientName.trim() !== '');
-      console.log('Valid leads (with client names):', validLeads);
+      // Show import preview with dynamic column mapping
+      const importPreview = leads.slice(0, 3).map(lead => {
+        const preview: Record<string, any> = {};
+        const visibleColumns = getVisibleColumns();
+        
+        // Show mapped fields
+        visibleColumns.forEach(column => {
+          const value = (lead as any)[column.fieldKey];
+          if (value !== undefined && value !== '') {
+            preview[column.label] = value;
+          }
+        });
+        
+        return preview;
+      });
+      
+      console.log('📊 Import Preview (first 3 leads):', importPreview);
+      console.log('📊 Total leads to import:', leads.length);
+      console.log('📊 Available columns:', visibleColumns.map(c => c.label));
+
+      // Filter out leads without client names and validate data
+      const validLeads = leads.filter(lead => {
+        if (!lead.clientName || lead.clientName.trim() === '') {
+          return false;
+        }
+        
+        // Validate required fields
+        const tempLead: Lead = {
+          id: '',
+          kva: lead.kva || '',
+          consumerNumber: lead.consumerNumber || '',
+          company: lead.company || '',
+          clientName: lead.clientName || '',
+          status: lead.status || 'New',
+          mobileNumber: '',
+          mobileNumbers: [],
+          isDone: false,
+          isDeleted: false,
+          isUpdated: false
+        };
+        
+        // Check for validation errors
+        const kvaError = validateLeadField('kva', tempLead.kva, tempLead);
+        const consumerError = validateLeadField('consumerNumber', tempLead.consumerNumber, tempLead);
+        const companyError = validateLeadField('company', tempLead.company, tempLead);
+        const clientError = validateLeadField('clientName', tempLead.clientName, tempLead);
+        
+        // Validate dynamic columns
+        const visibleColumns = getVisibleColumns();
+        let hasDynamicValidationErrors = false;
+        
+        visibleColumns.forEach(column => {
+          if (column.required) {
+            const value = (lead as any)[column.fieldKey];
+            if (!value || value.toString().trim() === '') {
+              console.log(`❌ Required field missing: ${column.label} for lead ${lead.clientName}`);
+              hasDynamicValidationErrors = true;
+            }
+          }
+        });
+        
+        return !kvaError && !consumerError && !companyError && !clientError && !hasDynamicValidationErrors;
+      });
+      console.log('Valid leads (with client names and validation):', validLeads);
 
       if (validLeads.length > 0) {
         // Add unique IDs to leads and auto-detect last activity date
@@ -1243,9 +1738,30 @@ export default function AllLeadsPage() {
         // Add leads to the system
         setLeads(prev => [...prev, ...leadsWithIds]);
         
-        // Show success notification
+        // Trigger data migration for any new columns that might have been added
+        const visibleColumns = getVisibleColumns();
+        console.log('🔄 Import completed, checking for data migration needs...');
+        console.log('📊 Current visible columns:', visibleColumns.map(c => c.label));
+        
+        // Show success notification with validation info
+        const totalLeads = leads.length;
+        const invalidLeads = totalLeads - validLeads.length;
+        let message = `Successfully imported ${validLeads.length} leads from ${file.name}`;
+        if (invalidLeads > 0) {
+          message += ` (${invalidLeads} leads skipped due to validation errors)`;
+        }
+        
+        // Add dynamic column info to success message
+        const dynamicColumns = visibleColumns.filter(col => 
+          !['kva', 'consumerNumber', 'company', 'clientName', 'connectionDate', 'discom', 'gidc', 'gstNumber', 'unitType', 'status', 'mobileNumber', 'mobileNumbers', 'companyLocation', 'followUpDate', 'lastActivityDate', 'notes'].includes(col.fieldKey)
+        );
+        
+        if (dynamicColumns.length > 0) {
+          message += `\nDynamic columns detected: ${dynamicColumns.map(c => c.label).join(', ')}`;
+        }
+        
         setShowToast(true);
-        setToastMessage(`Successfully imported ${validLeads.length} leads from ${file.name}`);
+        setToastMessage(message);
         setToastType('success');
         
         // Auto-hide toast after 5 seconds
@@ -1312,66 +1828,64 @@ export default function AllLeadsPage() {
   // Export function (copied from dashboard)
   const handleExportExcel = async () => {
     try {
+      // Small delay to ensure pending header edits are saved
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
       // Dynamic import to avoid turbopack issues
       const XLSX = await import('xlsx');
       
       // Get filtered leads
       const leadsToExport = allLeads;
       
-      // Define Excel headers with remapped column names for export
-      const headers = [
-        'con.no', 
-        'KVA', 
-        'Connection Date', 
-        'Company Name', 
-        'Client Name', 
-        'Discom',
-        'GIDC',
-        'GST Number',
-        'Main Mobile Number', 
-        'Lead Status', 
-        'Last Discussion', 
-        'Address',
-        'Next Follow-up Date',
-        'Last Activity Date',
-        'Mobile Number 2', 
-        'Contact Name 2', 
-        'Mobile Number 3', 
-        'Contact Name 3'
-      ];
+      // Use dynamic export headers based on current column configuration
+      const visibleColumns = getVisibleColumns();
+      const headers = visibleColumns.map(column => column.label);
       
       // Convert leads to Excel rows with remapped data
       const rows = leadsToExport.map(lead => {
         // Get mobile numbers and contacts
         const mobileNumbers = lead.mobileNumbers || [];
         const mainMobile = mobileNumbers.find(m => m.isMain) || mobileNumbers[0] || { number: lead.mobileNumber || '', name: '' };
-        const mobile2 = mobileNumbers[1] || { number: '', name: '' };
-        const mobile3 = mobileNumbers[2] || { number: '', name: '' };
         
         // Format main mobile number (phone number only, no contact name)
         const mainMobileDisplay = mainMobile.number || '';
         console.log('🔍 Export Debug - Lead:', lead.clientName, 'Main Mobile:', mainMobileDisplay);
         
-        return [
-          lead.consumerNumber || '',
-          lead.kva || '',
-          formatDateForExport(lead.connectionDate || ''), // Connection Date
-          lead.company || '',
-          lead.clientName || '',
-          lead.discom || '', // Discom
-          lead.gidc || '', // GIDC
-          lead.gstNumber || '', // GST Number
-          mainMobileDisplay, // Main Mobile Number (with contact name if available)
-          lead.status || 'New', // Lead Status
-          lead.notes || '', // Last Discussion
-          lead.companyLocation || (lead.notes && lead.notes.includes('Address:') ? lead.notes.split('Address:')[1]?.trim() || '' : ''), // Address
-          formatDateForExport(lead.followUpDate || ''), // Next Follow-up Date
-          formatDateForExport(lead.lastActivityDate || ''), // Last Activity Date
-          mobile2.number || '', // Mobile Number 2
-          mobile2.name || '', // Contact Name 2
-          mobile3.number || '', // Mobile Number 3
-          mobile3.name || '' // Contact Name 3
-        ];
+        // Map data according to visible columns
+        return visibleColumns.map(column => {
+          const fieldKey = column.fieldKey;
+          const value = (lead as any)[fieldKey] ?? '';
+          
+          // Handle special field formatting
+          switch (fieldKey) {
+            case 'kva':
+              return lead.kva || '';
+            case 'connectionDate':
+              return formatDateForExport(lead.connectionDate || '');
+            case 'consumerNumber':
+              return lead.consumerNumber || '';
+            case 'company':
+              return lead.company || '';
+            case 'clientName':
+              return lead.clientName || '';
+            case 'discom':
+              return lead.discom || '';
+            case 'mobileNumber':
+              return mainMobileDisplay;
+            case 'status':
+              return lead.status === 'Work Alloted' ? 'WAO' : (lead.status || 'New');
+            case 'lastActivityDate':
+              return formatDateForExport(lead.lastActivityDate || '');
+            case 'followUpDate':
+              return formatDateForExport(lead.followUpDate || '');
+            default:
+              // Handle custom columns
+              if (column.type === 'date') {
+                return formatDateForExport(value);
+              }
+              return value || '';
+          }
+        });
       });
       
       // Create workbook and worksheet
@@ -1413,11 +1927,7 @@ export default function AllLeadsPage() {
       <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-800 rounded-lg mb-2 p-2">
         {/* Title Section */}
         <div className="text-center mb-1">
-          <h1 
-            className="text-lg md:text-xl font-bold text-white cursor-pointer select-none mb-1"
-            onClick={handleSecretClick}
-            title="Click 5 times quickly to access password change"
-          >
+          <h1 className="text-lg md:text-xl font-bold text-white mb-1">
             All Leads
           </h1>
           <p className="text-blue-100 text-xs font-medium">
@@ -1566,758 +2076,83 @@ export default function AllLeadsPage() {
               )}
             </div>
           </div>
-          <LeadTable
+          <EditableTable
             leads={allLeads}
             onLeadClick={handleLeadClick}
+            onDelete={handleDeleteClick}
             selectedLeads={selectedLeads}
             onLeadSelection={handleSelectLead}
             showActions={false}
             emptyMessage="No leads found in the system"
+            editable={true}
+            headerEditable={true}
+            onExportClick={handleExportExcel}
+            onCellUpdate={handleCellUpdate}
+            validationErrors={validationErrors}
+            onImportClick={() => fileInputRef.current?.click()}
+            onColumnAdded={(column) => {
+              // Handle column addition
+              console.log('Column added:', column);
+            }}
+            onColumnDeleted={(fieldKey) => {
+              // Handle column deletion
+              console.log('Column deleted:', fieldKey);
+            }}
+            onColumnReorder={(newOrder) => {
+              // Handle column reordering
+              console.log('Columns reordered:', newOrder);
+            }}
+            onRowsAdded={(count) => {
+              // Handle row addition
+              console.log('Rows added:', count);
+            }}
+            onRowsDeleted={(count) => {
+              // Handle row deletion
+              console.log('Rows deleted:', count);
+            }}
           />
         </div>
       </div>
 
-      {/* Modal */}
-      {isModalOpen && selectedLead && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-3 mx-auto p-2 border w-11/12 md:w-5/6 lg:w-4/5 xl:w-3/4 shadow-lg rounded-md bg-white">
-            <div className="mt-3">
-              {/* Modal Header */}
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium text-black">Lead Details</h3>
-                <button
-                  onClick={closeModal}
-                  className="text-gray-400 hover:text-black transition-colors"
-                  title="Close modal"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* Modal Content */}
-              <div className="space-y-1">
-                {/* Main Information Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-1">
-                  {/* Basic Info */}
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Client Name</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.clientName, 'clientName')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy client name"
-                      >
-                        {copiedField === 'clientName' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm font-medium text-black">{selectedLead.clientName}</p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Company</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.company, 'company')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy company name"
-                      >
-                        {copiedField === 'company' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm font-medium text-black">{selectedLead.company}</p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Consumer Number</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.consumerNumber || 'N/A', 'consumerNumber')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy consumer number"
-                      >
-                        {copiedField === 'consumerNumber' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm font-medium text-black">{selectedLead.consumerNumber || 'N/A'}</p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">KVA</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.kva, 'kva')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy KVA"
-                      >
-                        {copiedField === 'kva' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm font-medium text-black">{selectedLead.kva}</p>
-                  </div>
-                  
-                  {/* Contact Info */}
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Main Phone</label>
-                      <button
-                        onClick={() => {
-                          const mainMobile = selectedLead.mobileNumbers && selectedLead.mobileNumbers.length > 0 
-                            ? selectedLead.mobileNumbers.find(m => m.isMain) || selectedLead.mobileNumbers[0]
-                            : null;
-                          
-                          let phoneNumber = 'N/A';
-                          if (mainMobile && mainMobile.number) {
-                            phoneNumber = mainMobile.name ? `${mainMobile.name}: ${mainMobile.number}` : mainMobile.number;
-                          } else {
-                            phoneNumber = selectedLead.mobileNumber || 'N/A';
-                          }
-                          
-                          copyToClipboard(phoneNumber, 'mainPhone');
-                        }}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy main phone number"
-                      >
-                        {copiedField === 'mainPhone' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm font-medium text-black">
-                      {(() => {
-                        const mainMobile = selectedLead.mobileNumbers && selectedLead.mobileNumbers.length > 0 
-                          ? selectedLead.mobileNumbers.find(m => m.isMain) || selectedLead.mobileNumbers[0]
-                          : null;
-                        
-                        if (mainMobile && mainMobile.number) {
-                          return mainMobile.name ? `${mainMobile.name}: ${mainMobile.number}` : mainMobile.number;
-                        }
-                        
-                        const phoneNumber = selectedLead.mobileNumber || 'N/A';
-                        return phoneNumber;
-                      })()}
-                    </p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Status</label>
-                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                      selectedLead.status === 'New' ? 'bg-blue-100 text-blue-800' :
-                      selectedLead.status === 'CNR' ? 'bg-purple-100 text-purple-800' :
-                      selectedLead.status === 'Busy' ? 'bg-yellow-100 text-yellow-800' :
-                      selectedLead.status === 'Follow-up' ? 'bg-orange-100 text-orange-800' :
-                      selectedLead.status === 'Deal Close' ? 'bg-green-100 text-green-800' :
-                      selectedLead.status === 'Work Alloted' ? 'bg-indigo-100 text-indigo-800' :
-                      selectedLead.status === 'Hotlead' ? 'bg-red-100 text-red-800' :
-                      selectedLead.status === 'Mandate Sent' ? 'bg-emerald-100 text-emerald-800' :
-                      selectedLead.status === 'Documentation' ? 'bg-teal-100 text-teal-800' :
-                      'bg-gray-100 text-black'
-                    }`}>
-                      {selectedLead.status}
-                    </span>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Unit Type</label>
-                    <p className="text-sm font-medium text-black">{selectedLead.unitType}</p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Discom</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.discom || 'N/A', 'discom')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy discom"
-                      >
-                        {copiedField === 'discom' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm font-medium text-black">{selectedLead.discom || 'N/A'}</p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">GIDC</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.gidc || 'N/A', 'gidc')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy gidc"
-                      >
-                        {copiedField === 'gidc' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm font-medium text-black">{selectedLead.gidc || 'N/A'}</p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">GST Number</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.gstNumber || 'N/A', 'gstNumber')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy gst number"
-                      >
-                        {copiedField === 'gstNumber' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm font-medium text-black">{selectedLead.gstNumber || 'N/A'}</p>
-                  </div>
-                  
-                  {/* Dates */}
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Connection Date</label>
-                    <p className="text-sm font-medium text-black">{formatDateToDDMMYYYY(selectedLead.connectionDate)}</p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Follow-up Date</label>
-                    <p className="text-sm font-medium text-black">
-                      {selectedLead.followUpDate ? formatDateToDDMMYYYY(selectedLead.followUpDate) : 'N/A'}
-                    </p>
-                  </div>
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Last Activity</label>
-                    <p className="text-sm font-medium text-black">{formatDateToDDMMYYYY(selectedLead.lastActivityDate)}</p>
-                  </div>
-                  
-                </div>
-
-                {/* Additional Numbers */}
-                {selectedLead.mobileNumbers && selectedLead.mobileNumbers.filter(m => !m.isMain && m.number.trim()).length > 0 && (
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-2">Additional Numbers</label>
-                    <div className="flex flex-wrap gap-2">
-                      {selectedLead.mobileNumbers.filter(m => !m.isMain && m.number.trim()).map((mobile, index) => (
-                        <span key={index} className="text-sm font-medium text-black bg-white px-2 py-1 rounded border">
-                          {mobile.name ? `${mobile.name}: ${mobile.number}` : mobile.number}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Notes and Additional Info */}
-                {(selectedLead.companyLocation || selectedLead.notes || selectedLead.finalConclusion) && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {selectedLead.companyLocation && (
-                      <div className="bg-gray-50 p-1.5 rounded-md">
-                        <label className="block text-xs font-medium text-black mb-1">Company Location</label>
-                        <p className="text-sm font-medium text-black">{selectedLead.companyLocation}</p>
-                      </div>
-                    )}
-                    {selectedLead.notes && (
-                      <div className="bg-gray-50 p-1.5 rounded-md">
-                        <label className="block text-xs font-medium text-black mb-1">Last Discussion</label>
-                        <p className="text-sm font-medium text-black line-clamp-3">{selectedLead.notes}</p>
-                      </div>
-                    )}
-                    {selectedLead.finalConclusion && (
-                      <div className="bg-gray-50 p-1.5 rounded-md">
-                        <label className="block text-xs font-medium text-black mb-1">Final Conclusion</label>
-                        <p className="text-sm font-medium text-black line-clamp-3">{selectedLead.finalConclusion}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Recent Activities - Compact */}
-                {selectedLead.activities && selectedLead.activities.length > 0 && (
-                  <div className="bg-gray-50 p-1.5 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-2">Recent Activities</label>
-                    <div className="space-y-1 max-h-32 overflow-y-auto">
-                      {selectedLead.activities.slice(-3).map((activity) => (
-                        <div key={activity.id} className="bg-white p-2 rounded text-xs">
-                          <p className="text-black font-medium">{activity.description}</p>
-                          <p className="text-black">
-                            {new Date(activity.timestamp).toLocaleDateString()}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Modal Footer */}
-              <div className="flex justify-between items-center mt-6 pt-4 border-t">
-                <div className="flex space-x-3">
-                  <button
-                    onClick={() => {
-                      const allInfo = `Client: ${selectedLead.clientName}
-Company: ${selectedLead.company}
-Consumer Number: ${selectedLead.consumerNumber || 'N/A'}
-KVA: ${selectedLead.kva}
-Discom: ${selectedLead.discom || 'N/A'}
-GIDC: ${selectedLead.gidc || 'N/A'}
-GST Number: ${selectedLead.gstNumber || 'N/A'}
-Phone: ${(() => {
-  const mainMobile = selectedLead.mobileNumbers && selectedLead.mobileNumbers.length > 0 
-    ? selectedLead.mobileNumbers.find(m => m.isMain) || selectedLead.mobileNumbers[0]
-    : null;
-  
-  if (mainMobile && mainMobile.number) {
-    return mainMobile.name ? `${mainMobile.name}: ${mainMobile.number}` : mainMobile.number;
-  }
-  
-  return selectedLead.mobileNumber || 'N/A';
-})()}
-Status: ${selectedLead.status}
-Unit Type: ${selectedLead.unitType}
-Connection Date: ${formatDateToDDMMYYYY(selectedLead.connectionDate)}
-Follow-up Date: ${selectedLead.followUpDate ? formatDateToDDMMYYYY(selectedLead.followUpDate) : 'N/A'}
-Last Activity: ${formatDateToDDMMYYYY(selectedLead.lastActivityDate)}
-${selectedLead.companyLocation ? `Location: ${selectedLead.companyLocation}` : ''}
-${selectedLead.notes ? `Last Discussion: ${selectedLead.notes}` : ''}
-${selectedLead.finalConclusion ? `Conclusion: ${selectedLead.finalConclusion}` : ''}`;
-                      copyToClipboard(allInfo, 'allInfo');
-                    }}
-                    className="px-4 py-2 text-sm font-medium text-black bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors flex items-center space-x-2"
-                  >
-                    {copiedField === 'allInfo' ? (
-                      <>
-                        <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                        <span>Copied!</span>
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                        <span>Copy All Info</span>
-                      </>
-                    )}
-                  </button>
-                  
-                  <button 
-                    onClick={() => handleWhatsAppRedirect(selectedLead)}
-                    className="px-4 py-2 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors flex items-center space-x-2"
-                  >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893A11.821 11.821 0 0020.885 3.488"/>
-                    </svg>
-                    <span>WhatsApp</span>
-                  </button>
-                </div>
-                <div className="flex space-x-3">
-                  <button
-                    onClick={closeModal}
-                    className="px-4 py-2 text-sm font-medium text-black bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors"
-                  >
-                    Close
-                  </button>
-                  {!selectedLead.isDeleted && (
-                    <button
-                      onClick={() => {
-                        // Store the lead data in localStorage for the edit form
-                        localStorage.setItem('editingLead', JSON.stringify(selectedLead));
-                        // Store modal return data for ESC key functionality
-                        localStorage.setItem('modalReturnData', JSON.stringify({
-                          sourcePage: 'all-leads',
-                          leadId: selectedLead.id
-                        }));
-                        closeModal();
-                        router.push(`/add-lead?mode=edit&id=${selectedLead.id}&from=all-leads`);
-                      }}
-                      className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
-                    >
-                      Edit Lead
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Lead Detail Modal */}
+      <LeadDetailModal
+        isOpen={showLeadModal}
+        onClose={() => {
+          setShowLeadModal(false);
+          document.body.style.overflow = 'unset';
+        }}
+        lead={selectedLead!}
+        onEdit={handleEditLead}
+        onDelete={handleDeleteClick}
+      />
 
       {/* Password Protection Modal */}
-      {showPasswordModal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-10 mx-auto p-3 border w-80 shadow-lg rounded-md bg-white">
-            <div className="mt-3">
-              {/* Modal Header */}
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium text-black">Delete Lead Protection</h3>
-                <button
-                  onClick={handlePasswordCancel}
-                  className="text-gray-400 hover:text-black transition-colors"
-                  title="Close modal"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* Modal Content */}
-              <div className="space-y-4">
-                <div className="bg-red-50 border border-red-200 rounded-md p-3">
-                  <div className="flex">
-                    <div className="flex-shrink-0">
-                      <svg className="h-5 w-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                      </svg>
-                    </div>
-                    <div className="ml-3">
-                      <h3 className="text-sm font-medium text-red-800">
-                        {leadToDelete?.isDeleted ? 'Warning: Permanent Deletion' : 'Warning: Delete Lead'}
-                      </h3>
-                      <div className="mt-2 text-sm text-red-700">
-                        {leadToDelete?.isDeleted ? (
-                          <>
-                            <p>You are about to permanently delete this lead from the system:</p>
-                            <p className="font-semibold mt-1">{leadToDelete?.clientName} - {leadToDelete?.company}</p>
-                            <p className="mt-1">This will completely remove the lead from all records. This action cannot be undone.</p>
-                          </>
-                        ) : (
-                          <>
-                            <p>You are about to delete this lead:</p>
-                            <p className="font-semibold mt-1">{leadToDelete?.clientName} - {leadToDelete?.company}</p>
-                            <p className="mt-1">The lead will be marked as deleted and moved to the &quot;All Leads&quot; page. This action cannot be undone.</p>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label htmlFor="password" className="block text-sm font-medium text-black mb-2">
-                    Enter Admin Password to Continue
-                  </label>
-                  <input
-                    type="password"
-                    id="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handlePasswordSubmit()}
-                    placeholder="Enter password..."
-                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-black text-black focus:outline-none focus:ring-red-500 focus:border-red-500"
-                    autoFocus
-                  />
-                  {passwordError && (
-                    <p className="mt-2 text-sm text-red-600">{passwordError}</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Modal Footer */}
-              <div className="flex justify-end space-x-3 mt-6 pt-4 border-t">
-                <button
-                  onClick={handlePasswordCancel}
-                  className="px-4 py-2 text-sm font-medium text-black bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handlePasswordSubmit}
-                  disabled={!password.trim()}
-                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {leadToDelete?.isDeleted ? 'Permanently Delete' : 'Delete Lead'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Password Change Modal */}
-      {showPasswordChangeModal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-10 mx-auto p-3 border w-80 shadow-lg rounded-md bg-white">
-            <div className="mt-3">
-              {/* Modal Header */}
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium text-black">Change Delete Password</h3>
-                <button
-                  onClick={handlePasswordChangeCancel}
-                  className="text-gray-400 hover:text-black transition-colors"
-                  title="Close modal"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* Modal Content */}
-              <div className="space-y-4">
-                <div>
-                  <label htmlFor="currentPassword" className="block text-sm font-medium text-black mb-2">
-                    Current Password
-                  </label>
-                  <input
-                    type="password"
-                    id="currentPassword"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    placeholder="Enter current password..."
-                    autoComplete="off"
-                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-black text-black focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="newPassword" className="block text-sm font-medium text-black mb-2">
-                    New Password
-                  </label>
-                  <input
-                    type="password"
-                    id="newPassword"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Enter new password..."
-                    autoComplete="new-password"
-                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-black text-black focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="confirmPassword" className="block text-sm font-medium text-black mb-2">
-                    Confirm New Password
-                  </label>
-                  <input
-                    type="password"
-                    id="confirmPassword"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="Confirm new password..."
-                    autoComplete="new-password"
-                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-black text-black focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
-
-                {passwordChangeError && (
-                  <p className="text-sm text-red-600">{passwordChangeError}</p>
-                )}
-              </div>
-
-              {/* Modal Footer */}
-              <div className="flex justify-end space-x-3 mt-6 pt-4 border-t">
-                <button
-                  onClick={handlePasswordChangeCancel}
-                  className="px-4 py-2 text-sm font-medium text-black bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handlePasswordChangeSubmit}
-                  disabled={!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()}
-                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Change Password
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Bulk Delete Modal */}
-      {showBulkDeleteModal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-10 mx-auto p-3 border w-80 shadow-lg rounded-md bg-white">
-            <div className="mt-3">
-              {/* Modal Header */}
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium text-black">Bulk Delete Protection</h3>
-                <button
-                  onClick={handleBulkDeleteCancel}
-                  className="text-gray-400 hover:text-black transition-colors"
-                  title="Close modal"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* Modal Content */}
-              <div className="space-y-4">
-                <div className="bg-red-50 border border-red-200 rounded-md p-3">
-                  <div className="flex">
-                    <div className="flex-shrink-0">
-                      <svg className="h-5 w-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                      </svg>
-                    </div>
-                    <div className="ml-3">
-                      <h3 className="text-sm font-medium text-red-800">
-                        {hasDeletedLeads ? 'Warning: Mixed Bulk Deletion' : 'Warning: Bulk Deletion'}
-                      </h3>
-                      <div className="mt-2 text-sm text-red-700">
-                        {hasDeletedLeads ? (
-                          <>
-                            <p>You are about to delete {selectedLeads.size} leads:</p>
-                            <p className="mt-1">• Some leads will be marked as deleted and moved to &quot;All Leads&quot;</p>
-                            <p className="mt-1">• Some leads will be permanently removed from the system</p>
-                            <p className="mt-1">This action cannot be undone.</p>
-                          </>
-                        ) : (
-                          <>
-                            <p>You are about to delete {selectedLeads.size} leads.</p>
-                            <p className="mt-1">The leads will be marked as deleted and moved to the &quot;All Leads&quot; page.</p>
-                            <p className="mt-1">This action cannot be undone.</p>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label htmlFor="bulkDeletePassword" className="block text-sm font-medium text-black mb-2">
-                    Enter Admin Password to Continue
-                  </label>
-                  <input
-                    type="password"
-                    id="bulkDeletePassword"
-                    value={bulkDeletePassword}
-                    onChange={(e) => setBulkDeletePassword(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleBulkDeleteSubmit()}
-                    placeholder="Enter password..."
-                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-black text-black focus:outline-none focus:ring-red-500 focus:border-red-500"
-                    autoFocus
-                  />
-                  {bulkDeleteError && (
-                    <p className="mt-2 text-sm text-red-600">{bulkDeleteError}</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Modal Footer */}
-              <div className="flex justify-end space-x-3 mt-6 pt-4 border-t">
-                <button
-                  onClick={handleBulkDeleteCancel}
-                  className="px-4 py-2 text-sm font-medium text-black bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleBulkDeleteSubmit}
-                  disabled={!bulkDeletePassword.trim()}
-                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {hasDeletedLeads ? `Process ${selectedLeads.size} Leads` : `Delete ${selectedLeads.size} Leads`}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <PasswordModal
+        isOpen={showPasswordModal}
+        onClose={handlePasswordCancel}
+        operation="rowManagement"
+        onSuccess={handlePasswordSuccess}
+        title={pendingDeleteOperation?.type === 'bulk' ? 'Delete Multiple Leads' : 'Delete Lead'}
+        description={
+          pendingDeleteOperation?.type === 'bulk' 
+            ? `You are about to permanently delete ${pendingDeleteOperation.leadIds?.length || 0} leads from the system. This action cannot be undone.`
+            : `You are about to permanently delete this lead from the system: ${pendingDeleteOperation?.lead?.clientName} - ${pendingDeleteOperation?.lead?.company}. This action cannot be undone.`
+        }
+      />
 
       {/* Toast Notification */}
       {showToast && (
         <div className="fixed top-4 right-4 z-50">
-          <div className={`max-w-sm w-full bg-white shadow-lg rounded-lg pointer-events-auto ring-1 ring-black ring-opacity-5 overflow-hidden ${
-            toastType === 'success' ? 'border-l-4 border-green-400' :
-            toastType === 'error' ? 'border-l-4 border-red-400' :
-            'border-l-4 border-blue-400'
+          <div className={`px-4 py-2 rounded-md shadow-lg ${
+            toastType === 'success' ? 'bg-green-500 text-white' :
+            toastType === 'error' ? 'bg-red-500 text-white' :
+            'bg-blue-500 text-white'
           }`}>
-            <div className="p-4">
-              <div className="flex items-start">
-                <div className="flex-shrink-0">
-                  {toastType === 'success' ? (
-                    <svg className="h-6 w-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                  ) : toastType === 'error' ? (
-                    <svg className="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                    </svg>
-                  ) : (
-                    <svg className="h-6 w-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  )}
-                </div>
-                <div className="ml-3 w-0 flex-1 pt-0.5">
-                  <p className={`text-sm font-medium ${
-                    toastType === 'success' ? 'text-green-800' :
-                    toastType === 'error' ? 'text-red-800' :
-                    'text-blue-800'
-                  }`}>
-                    {toastMessage}
-                  </p>
-                </div>
-                <div className="ml-4 flex-shrink-0 flex">
-                  <button
-                    onClick={() => setShowToast(false)}
-                    className={`bg-white rounded-md inline-flex ${
-                      toastType === 'success' ? 'text-green-400 hover:text-green-500' :
-                      toastType === 'error' ? 'text-red-400 hover:text-red-500' :
-                      'text-blue-400 hover:text-blue-500'
-                    } focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500`}
-                  >
-                    <span className="sr-only">Close</span>
-                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </div>
+            {toastMessage}
           </div>
         </div>
       )}
+
     </div>
   );
 }

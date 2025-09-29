@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { LeadProvider } from "./context/LeadContext";
+import { PasswordProvider } from "./context/PasswordContext";
+import { ColumnProvider } from "./context/ColumnContext";
+import { HeaderProvider } from "./context/HeaderContext";
 import { NavigationProvider } from "./context/NavigationContext";
 import NavigationWrapper from "./components/NavigationWrapper";
 
@@ -28,19 +31,25 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="gu">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-gray-50`}
       >
         <LeadProvider>
-          <NavigationProvider>
-            <div className="flex flex-col h-screen">
-              <NavigationWrapper />
-              <main className="flex-1 overflow-y-auto p-0">
-                {children}
-              </main>
-            </div>
-          </NavigationProvider>
+          <PasswordProvider>
+            <ColumnProvider>
+              <HeaderProvider>
+                <NavigationProvider>
+                  <div className="flex flex-col h-screen">
+                    <NavigationWrapper />
+                    <main className="flex-1 overflow-y-auto p-0">
+                      {children}
+                    </main>
+                  </div>
+                </NavigationProvider>
+              </HeaderProvider>
+            </ColumnProvider>
+          </PasswordProvider>
         </LeadProvider>
       </body>
     </html>

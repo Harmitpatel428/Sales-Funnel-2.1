@@ -6,24 +6,36 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --no-lint",
+    "build:prod": "next build --no-lint --no-mangling",
     "start": "next start",
     "lint": "eslint . --ext .ts,.tsx --fix",
     "lint:check": "eslint . --ext .ts,.tsx",
     "type-check": "tsc --noEmit",
     "build:analyze": "ANALYZE=true next build",
     "clean": "rm -rf .next out dist",
+    "clean:win": "if exist .next rmdir /s /q .next && if exist out rmdir /s /q out && if exist dist rmdir /s /q dist",
     "preview": "next build && next start",
     "electron": "electron .",
     "electron-dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
-    "build-electron": "next build --no-lint && electron-builder",
+    "build-electron": "npm run build:prod && electron-builder",
+    "build-electron:win": "npm run clean:win && npm run build:prod && electron-builder --win",
     "dist": "npm run build-electron",
+    "dist:win": "npm run build-electron:win",
+    "build:optimized": "node scripts/build-optimized.js",
     "auto-commit": "node auto-commit.js",
-    "auto-commit:start": "start-auto-commit.bat"
+    "auto-commit:start": "start-auto-commit.bat",
+    "dev:full": "start-development.bat",
+    "dev:ps": "start-development.ps1",
+    "status": "project-status.bat",
+    "setup": "npm install && npm run auto-commit:start",
+    "test": "vitest run"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@types/dompurify": "^3.0.5",
+    "dompurify": "^3.2.7",
     "express": "^4.21.2",
     "framer-motion": "^12.23.12",
     "gsap": "^3.13.0",
@@ -37,7 +49,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^20.19.17",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "concurrently": "^9.2.1",
@@ -47,6 +59,7 @@
     "eslint-config-next": "15.5.2",
     "tailwindcss": "^4",
     "typescript": "^5",
+    "vitest": "^3.2.4",
     "wait-on": "^8.0.4"
   },
   "main": "electron/main.js",
@@ -55,24 +68,56 @@
     "appId": "com.enterpriseleadmgmt.app",
     "productName": "Enterprise Lead Management System",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
     "files": [
       "out/**/*",
       "electron/**/*",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "!node_modules/**/*.d.ts",
+      "!node_modules/**/test/**/*",
+      "!node_modules/**/tests/**/*",
+      "!node_modules/**/*.md",
+      "!node_modules/**/README*",
+      "!node_modules/**/CHANGELOG*",
+      "!node_modules/**/LICENSE*"
+    ],
+    "extraResources": [
+      {
+        "from": "out",
+        "to": "app",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
-      "target": "nsis",
-      "icon": "public/favicon.ico"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker",
+      "artifactName": "${productName} Setup ${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Enterprise Lead Management System",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
     },
     "mac": {
-      "target": "dmg",
-      "icon": "public/favicon.ico"
+      "target": "dmg"
     },
     "linux": {
-      "target": "AppImage",
-      "icon": "public/favicon.ico"
+      "target": "AppImage"
     }
   }
 }

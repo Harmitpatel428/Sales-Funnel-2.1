@@ -2,25 +2,24 @@
 
 import React, { useState, FormEvent, ChangeEvent, useEffect } from 'react';
 import { useLeads, Lead, MobileNumber } from '../context/LeadContext';
+import { useColumns } from '../context/ColumnContext';
 import { useRouter } from 'next/navigation';
+import { useValidation } from '../hooks/useValidation';
 
 export default function AddLeadPage() {
   const router = useRouter();
   const { addLead, updateLead, leads } = useLeads();
+  const { getVisibleColumns } = useColumns();
+  const { validateLeadField, validateMobileNumbers, validateCustomUnitType } = useValidation();
+  
+  // Define permanent fields that should always appear in the form
+  const permanentFields = ['mobileNumbers', 'mobileNumber', 'unitType', 'status', 'followUpDate', 'companyLocation', 'notes', 'lastActivityDate'];
   
   // Track where the user came from
   const [cameFromHome, setCameFromHome] = useState(false);
   const [sourcePage, setSourcePage] = useState<string>('');
   
   const [formData, setFormData] = useState({
-    kva: '',
-    connectionDate: '',
-    consumerNumber: '',
-    company: '',
-    clientName: '',
-    discom: '',
-    gidc: '',
-    gstNumber: '',
     mobileNumber: '', // Keep for backward compatibility
     mobileNumbers: [
       { id: '1', number: '', name: '', isMain: true },
@@ -28,7 +27,7 @@ export default function AddLeadPage() {
       { id: '3', number: '', name: '', isMain: false }
     ] as MobileNumber[],
     companyLocation: '',
-    unitType: 'New' as Lead['unitType'],
+    unitType: 'New' as string,
     status: 'New' as Lead['status'],
     lastActivityDate: '', // Will be auto-set to current date on submission
     followUpDate: '',
@@ -39,8 +38,10 @@ export default function AddLeadPage() {
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errors, setErrors] = useState<Partial<Record<keyof typeof formData, string>>>({});
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
+  const [customUnitType, setCustomUnitType] = useState<string>('');
   const [editingLeadId, setEditingLeadId] = useState<string | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [customFields, setCustomFields] = useState<Record<string, any>>({});
 
   // Extract address from notes helper function
   const extractAddressFromNotes = (notes: string) => {
@@ -71,6 +72,7 @@ export default function AddLeadPage() {
     const searchParams = new URLSearchParams(window.location.search);
     const mode = searchParams.get('mode');
     const from = searchParams.get('from');
+    const tab = searchParams.get('tab');
     
     // Check if user came from home page
     if (from === 'home') {
@@ -80,6 +82,11 @@ export default function AddLeadPage() {
     // Store source page for navigation back
     if (from) {
       setSourcePage(from);
+    }
+    
+    // Store tab information for proper navigation back
+    if (tab) {
+      localStorage.setItem('returnTab', tab);
     }
     
     if (mode === 'edit') {
@@ -117,25 +124,41 @@ export default function AddLeadPage() {
           }
           
           console.log('Mobile numbers being set:', mobileNumbers); // Debug log
+          console.log('Lead data discom:', leadData.discom); // Debug log for discom
+          
+          // Handle custom unit type for editing
+          const unitType = leadData.unitType || 'New';
+          const isCustomUnitType = !['New', 'Existing', 'Other'].includes(unitType);
+          
           setFormData({
-            kva: leadData.kva || '',
-            connectionDate: leadData.connectionDate || '',
-            consumerNumber: leadData.consumerNumber || '',
-            company: leadData.company || '',
-            clientName: leadData.clientName || '',
-            discom: leadData.discom || '',
-            gidc: leadData.gidc || '',
-            gstNumber: leadData.gstNumber || '',
             mobileNumber: leadData.mobileNumber || '', // Keep for backward compatibility
             mobileNumbers: mobileNumbers,
             companyLocation: leadData.companyLocation || address, // Use existing or extracted address
-            unitType: leadData.unitType || 'New',
+            unitType: isCustomUnitType ? 'Other' : unitType,
             status: leadData.status || 'New',
             lastActivityDate: leadData.lastActivityDate || '', // Keep existing or blank
             followUpDate: leadData.followUpDate || '',
             finalConclusion: leadData.finalConclusion || '',
             notes: cleanNotes || '', // Use clean notes without address
           });
+          
+          // Set custom unit type if it's a custom value
+          if (isCustomUnitType) {
+            setCustomUnitType(unitType);
+          }
+          
+          // Load custom fields from lead data
+          const visibleColumns = getVisibleColumns();
+          const customColumns = visibleColumns.filter(col => !permanentFields.includes(col.fieldKey));
+          const customFieldValues: Record<string, any> = {};
+          
+          customColumns.forEach(column => {
+            if (leadData[column.fieldKey as keyof Lead] !== undefined) {
+              customFieldValues[column.fieldKey] = leadData[column.fieldKey as keyof Lead];
+            }
+          });
+          
+          setCustomFields(customFieldValues);
         } catch (error) {
           console.error('Error parsing stored lead data:', error);
         }
@@ -147,7 +170,7 @@ export default function AddLeadPage() {
 
   // Auto-detect client name when leads are loaded and first mobile number is complete
   useEffect(() => {
-    if (leads.length > 0 && formData.mobileNumbers[0]?.number?.length === 10 && !formData.clientName.trim()) {
+    if (leads.length > 0 && formData.mobileNumbers[0]?.number?.length === 10 && !customFields.clientName?.trim()) {
       console.log('🔄 useEffect: Attempting auto-detection for mobile:', formData.mobileNumbers[0].number);
       
       const existingLead = leads.find(lead => {
@@ -173,7 +196,7 @@ export default function AddLeadPage() {
       
       if (existingLead) {
         console.log('🎉 useEffect: Auto-populating client name:', existingLead.clientName);
-        setFormData(prev => ({
+        setCustomFields(prev => ({
           ...prev,
           clientName: existingLead.clientName
         }));
@@ -181,7 +204,7 @@ export default function AddLeadPage() {
         console.log('❌ useEffect: No matching lead found for mobile:', formData.mobileNumbers[0].number);
       }
     }
-  }, [leads, formData.mobileNumbers[0]?.number, formData.clientName]);
+  }, [leads, formData.mobileNumbers[0]?.number, customFields.clientName]);
 
   // Handle ESC key to close/cancel form
   useEffect(() => {
@@ -206,80 +229,64 @@ export default function AddLeadPage() {
     return 'id-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
   };
 
-  // Form validation
+  // Form validation using validation hook
   const validateForm = (): boolean => {
     const newErrors: Partial<Record<keyof typeof formData, string>> = {};
 
-    // Required field validations
-    if (!formData.kva.trim()) {
-      newErrors.kva = 'KVA is required';
-    }
+    // Create a temporary lead object for validation
+    const tempLead: Lead = {
+      id: '',
+      kva: '', // Will be validated from custom fields
+      consumerNumber: '', // Will be validated from custom fields
+      company: '', // Will be validated from custom fields
+      clientName: '', // Will be validated from custom fields
+      connectionDate: '', // Will be validated from custom fields
+      followUpDate: formData.followUpDate,
+      lastActivityDate: formData.lastActivityDate,
+      notes: formData.notes,
+      status: formData.status,
+      unitType: formData.unitType,
+      mobileNumber: '',
+      mobileNumbers: [],
+      isDone: false,
+      isDeleted: false,
+      isUpdated: false
+    };
 
-    if (!formData.consumerNumber.trim()) {
-      newErrors.consumerNumber = 'Consumer number is required';
-    } else if (!/^[\d\s\-\+\(\)]+$/.test(formData.consumerNumber.trim())) {
-      newErrors.consumerNumber = 'Please enter a valid consumer number';
-    }
+    // Validate permanent fields using the validation hook
+    const permanentFieldsToValidate: (keyof typeof formData)[] = [
+      'followUpDate', 'notes'
+    ];
 
-    if (!formData.company.trim()) {
-      newErrors.company = 'Company name is required';
-    }
-
-    if (!formData.clientName.trim()) {
-      newErrors.clientName = 'Client name is required';
-    }
-
-    // Mobile numbers are now optional - no validation error if none provided
-    
-    // Validate individual mobile numbers
-    formData.mobileNumbers.forEach((mobile, index) => {
-      if (mobile.number.trim() && !/^[\d\s\-\+\(\)]+$/.test(mobile.number.trim())) {
-        newErrors[`mobileNumber_${index}` as keyof typeof formData] = 'Please enter a valid mobile number';
+    permanentFieldsToValidate.forEach(field => {
+      const error = validateLeadField(field as keyof Lead, formData[field], tempLead);
+      if (error) {
+        newErrors[field] = error;
       }
     });
 
-    // Connection date validation (if provided) - now accepts DD-MM-YYYY format
-    if (formData.connectionDate && !/^\d{2}-\d{2}-\d{4}$/.test(formData.connectionDate)) {
-      newErrors.connectionDate = 'Please enter a valid connection date (DD-MM-YYYY)';
+    // Validate mobile numbers
+    const mobileErrors = validateMobileNumbers(formData.mobileNumbers);
+    Object.assign(newErrors, mobileErrors);
+
+    // Validate custom unit type
+    const unitTypeError = validateCustomUnitType(formData.unitType, customUnitType);
+    if (unitTypeError) {
+      newErrors.unitType = unitTypeError;
     }
 
-    // Date validation for DD-MM-YYYY format
-    if (formData.followUpDate && formData.followUpDate.trim() !== '') {
-      // Validate DD-MM-YYYY format
-      if (!/^\d{2}-\d{2}-\d{4}$/.test(formData.followUpDate)) {
-        newErrors.followUpDate = 'Please enter a valid follow-up date (DD-MM-YYYY)';
-      } else {
-        // Check if date is in the past
-        try {
-          const dateParts = formData.followUpDate.split('-');
-          if (dateParts.length === 3 && dateParts[0] && dateParts[1] && dateParts[2]) {
-            const day = dateParts[0];
-            const month = dateParts[1];
-            const year = dateParts[2];
-            const followUpDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            
-            if (followUpDate < today) {
-              newErrors.followUpDate = 'Follow-up date cannot be in the past';
-            }
-          }
-        } catch {
-          newErrors.followUpDate = 'Please enter a valid follow-up date (DD-MM-YYYY)';
+    // Validate custom fields based on column configuration
+    const visibleColumns = getVisibleColumns();
+    const customColumns = visibleColumns.filter(col => !permanentFields.includes(col.fieldKey));
+    
+    customColumns.forEach(column => {
+      if (column.required) {
+        const value = customFields[column.fieldKey];
+        if (!value || (typeof value === 'string' && !value.trim())) {
+          newErrors[`custom_${column.fieldKey}` as keyof typeof formData] = `${column.label} is required`;
         }
       }
-    }
-
-    // Required fields for specific statuses
-    const statusesRequiringFollowUp = ['Follow-up', 'Hotlead', 'Mandate Sent', 'Documentation'];
-    if (statusesRequiringFollowUp.includes(formData.status)) {
-      if (!formData.followUpDate.trim()) {
-        newErrors.followUpDate = 'Next follow-up date is required for this status';
-      }
-      if (!formData.notes.trim()) {
-        newErrors.notes = 'Last discussion is required for this status';
-      }
-    }
+    });
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -298,9 +305,7 @@ export default function AddLeadPage() {
       );
 
       // Auto-detect client name from first mobile number if it's complete (10 digits)
-      let updatedClientName = prev.clientName;
-      
-      if (index === 0 && numericValue.length === 10 && !prev.clientName.trim()) {
+      if (index === 0 && numericValue.length === 10 && !customFields.clientName?.trim()) {
         console.log('🎯 Auto-detection triggered for mobile:', numericValue);
         console.log('📊 Available leads:', leads.length);
         
@@ -328,7 +333,6 @@ export default function AddLeadPage() {
         
         if (existingLead) {
           console.log('🎉 Auto-populating client name:', existingLead.clientName);
-          updatedClientName = existingLead.clientName;
           
           // Also auto-populate the first mobile number's name if it's empty
           if (updatedMobileNumbers[0] && !updatedMobileNumbers[0].name.trim()) {
@@ -343,10 +347,31 @@ export default function AddLeadPage() {
 
       return {
         ...prev,
-        mobileNumbers: updatedMobileNumbers,
-        clientName: updatedClientName
+        mobileNumbers: updatedMobileNumbers
       };
     });
+
+    // Update custom fields if client name was auto-detected
+    if (index === 0 && numericValue.length === 10 && !customFields.clientName?.trim()) {
+      const existingLead = leads.find(lead => {
+        if (lead.mobileNumber && lead.mobileNumber.trim() === numericValue) {
+          return true;
+        }
+        if (lead.mobileNumbers && Array.isArray(lead.mobileNumbers)) {
+          return lead.mobileNumbers.some(m => 
+            m.number && m.number.trim() === numericValue
+          );
+        }
+        return false;
+      });
+
+      if (existingLead) {
+        setCustomFields(prev => ({
+          ...prev,
+          clientName: existingLead.clientName
+        }));
+      }
+    }
 
     // Clear error for this field
     const errorKey = `mobileNumber_${index}` as keyof typeof formData;
@@ -369,7 +394,34 @@ export default function AddLeadPage() {
     }));
   };
 
-
+  // Handle custom field change
+  const handleCustomFieldChange = (fieldKey: string, value: any) => {
+    // Get column configuration for validation
+    const visibleColumns = getVisibleColumns();
+    const columnConfig = visibleColumns.find(col => col.fieldKey === fieldKey);
+    
+    // Basic validation based on column type
+    let validatedValue = value;
+    if (columnConfig) {
+      if (columnConfig.type === 'number' && value !== '') {
+        validatedValue = parseFloat(value) || 0;
+      } else if (columnConfig.type === 'phone' && value !== '') {
+        // Ensure phone numbers are numeric only
+        validatedValue = value.replace(/[^0-9]/g, '').slice(0, 10);
+      } else if (columnConfig.type === 'email' && value !== '') {
+        // Basic email validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(value)) {
+          console.warn(`Invalid email format for ${fieldKey}: ${value}`);
+        }
+      }
+    }
+    
+    setCustomFields(prev => ({
+      ...prev,
+      [fieldKey]: validatedValue
+    }));
+  };
 
   // Handle main mobile number selection
   const handleMainMobileNumberChange = (index: number) => {
@@ -382,40 +434,6 @@ export default function AddLeadPage() {
     }));
   };
 
-  // Handle connection date changes with auto-formatting
-  const handleConnectionDateChange = (e: ChangeEvent<HTMLInputElement>): void => {
-    let value = e.target.value;
-    
-    // Allow user to delete dashes, but auto-add them back
-    // Remove all non-numeric characters first
-    const numericValue = value.replace(/[^0-9]/g, '');
-    
-    // Auto-format with dashes based on numeric length
-    let formattedValue = '';
-    if (numericValue.length >= 1) {
-      formattedValue = numericValue.slice(0, 2);
-      if (numericValue.length >= 3) {
-        formattedValue += '-' + numericValue.slice(2, 4);
-        if (numericValue.length >= 5) {
-          formattedValue += '-' + numericValue.slice(4, 8);
-        }
-      }
-    }
-    
-    setFormData(prev => ({
-      ...prev,
-      connectionDate: formattedValue
-    }));
-
-    // Clear error for this field
-    if (errors.connectionDate) {
-      setErrors(prev => {
-        const newErrors = { ...prev };
-        delete newErrors.connectionDate;
-        return newErrors;
-      });
-    }
-  };
 
 
   // Handle input changes
@@ -448,6 +466,11 @@ export default function AddLeadPage() {
           updatedFormData.mobileNumbers = prev.mobileNumbers.map((mobile, index) => 
             index === 0 ? { ...mobile, name: value.trim() } : mobile
           );
+        }
+
+        // Clear custom unit type when unit type changes away from "Other"
+        if (name === 'unitType' && value !== 'Other') {
+          setCustomUnitType('');
         }
 
         return updatedFormData;
@@ -487,21 +510,24 @@ export default function AddLeadPage() {
         // Get main mobile number for backward compatibility
         const mainMobileNumber = formData.mobileNumbers.find(mobile => mobile.isMain)?.number || formData.mobileNumbers[0]?.number || '';
         
-        // Update existing lead
+        // Prevent overwrite during submit - exclude mobileNumber and companyLocation from customFields
+        const { mobileNumber, companyLocation, ...restCustom } = customFields;
+        
+        // Update existing lead with all current columns (permanent + custom)
         const updatedLead: Lead = {
           id: editingLeadId,
-          kva: formData.kva,
-          connectionDate: formData.connectionDate,
-          consumerNumber: formData.consumerNumber,
-          company: formData.company,
-          clientName: formData.clientName,
-          discom: formData.discom,
-          gidc: formData.gidc,
-          gstNumber: formData.gstNumber,
+          kva: '', // Will be set from custom fields
+          connectionDate: '', // Will be set from custom fields
+          consumerNumber: '', // Will be set from custom fields
+          company: '', // Will be set from custom fields
+          clientName: '', // Will be set from custom fields
+          discom: '', // Will be set from custom fields
+          gidc: '', // Will be set from custom fields
+          gstNumber: '', // Will be set from custom fields
           mobileNumber: mainMobileNumber, // Keep for backward compatibility
           mobileNumbers: formData.mobileNumbers,
           companyLocation: formData.companyLocation,
-          unitType: formData.unitType,
+          unitType: formData.unitType === 'Other' ? customUnitType : formData.unitType,
           status: formData.status,
           lastActivityDate: currentDate, // Always update to current date
           followUpDate: formData.followUpDate,
@@ -513,6 +539,8 @@ export default function AddLeadPage() {
           mandateStatus: 'Pending',
           documentStatus: formData.status === 'Mandate Sent' ? 'Signed Mandate' : 
                          formData.status === 'Documentation' ? 'Pending Documents' : 'Pending Documents',
+          // Include custom field values (excluding mobileNumber and companyLocation)
+          ...restCustom
         };
         
         // Simulate API call delay
@@ -522,6 +550,36 @@ export default function AddLeadPage() {
         
         // Clear stored editing data
         localStorage.removeItem('editingLead');
+        
+        // Check if we came from a modal and should return to it
+        const modalReturnData = localStorage.getItem('modalReturnData');
+        if (modalReturnData) {
+          try {
+            const { sourcePage: modalSourcePage, tab } = JSON.parse(modalReturnData);
+            // Navigate back to the specific source page without reopening modal
+            const routeMap: { [key: string]: string } = {
+              'documentation': '/follow-up-mandate?tab=pending',
+              'mandate-sent': '/follow-up-mandate?tab=signed',
+              'due-today': '/due-today',
+              'upcoming': '/upcoming',
+              'all-leads': '/all-leads',
+              'dashboard': '/dashboard'
+            };
+            
+            // Handle tab-specific navigation for due-today
+            let targetRoute = routeMap[modalSourcePage] || '/dashboard';
+            if (modalSourcePage === 'due-today' && tab) {
+              targetRoute = `/due-today?tab=${tab}`;
+            }
+            
+            router.push(targetRoute);
+            localStorage.removeItem('modalReturnData');
+            return;
+          } catch (error) {
+            console.error('Error parsing modal return data:', error);
+            localStorage.removeItem('modalReturnData');
+          }
+        }
         
         // Navigate back to appropriate page
         if (cameFromHome) {
@@ -536,7 +594,16 @@ export default function AddLeadPage() {
             'all-leads': '/all-leads',
             'dashboard': '/dashboard'
           };
-          const targetRoute = routeMap[sourcePage] || '/dashboard';
+          
+          // Check if we have tab information for due-today
+          const returnTab = localStorage.getItem('returnTab');
+          let targetRoute = routeMap[sourcePage] || '/dashboard';
+          
+          if (sourcePage === 'due-today' && returnTab) {
+            targetRoute = `/due-today?tab=${returnTab}`;
+            localStorage.removeItem('returnTab'); // Clean up after use
+          }
+          
           router.push(targetRoute);
         } else {
           // Add a flag to indicate successful update
@@ -550,8 +617,8 @@ export default function AddLeadPage() {
         // Auto-populate contact name ONLY for the first mobile number (index 0) if no contact name is provided
         const updatedMobileNumbers = formData.mobileNumbers.map((mobile, index) => {
           // ONLY apply to the first mobile number (index 0) - regardless of isMain status
-          if (index === 0 && mobile.number && mobile.number.trim() !== '' && !mobile.name && formData.clientName) {
-            return { ...mobile, name: formData.clientName };
+          if (index === 0 && mobile.number && mobile.number.trim() !== '' && !mobile.name && customFields.clientName) {
+            return { ...mobile, name: customFields.clientName };
           }
           // For all other mobile numbers (index 1, 2, etc.), keep them exactly as they are
           return mobile;
@@ -560,20 +627,24 @@ export default function AddLeadPage() {
         // Get main mobile number for backward compatibility
         const mainMobileNumber = updatedMobileNumbers.find(mobile => mobile.isMain)?.number || updatedMobileNumbers[0]?.number || '';
         
+        // Prevent overwrite during submit - exclude mobileNumber and companyLocation from customFields
+        const { mobileNumber, companyLocation, ...restCustom } = customFields;
+        
+        // Create lead with all current columns (permanent + custom)
         const newLead: Lead = {
           id: leadId,
-          kva: formData.kva,
-          connectionDate: formData.connectionDate,
-          consumerNumber: formData.consumerNumber,
-          company: formData.company,
-          clientName: formData.clientName,
-          discom: formData.discom,
-          gidc: formData.gidc,
-          gstNumber: formData.gstNumber,
+          kva: '', // Will be set from custom fields
+          connectionDate: '', // Will be set from custom fields
+          consumerNumber: '', // Will be set from custom fields
+          company: '', // Will be set from custom fields
+          clientName: '', // Will be set from custom fields
+          discom: '', // Will be set from custom fields
+          gidc: '', // Will be set from custom fields
+          gstNumber: '', // Will be set from custom fields
           mobileNumber: mainMobileNumber, // Keep for backward compatibility
           mobileNumbers: updatedMobileNumbers,
           companyLocation: formData.companyLocation,
-          unitType: formData.unitType,
+          unitType: formData.unitType === 'Other' ? customUnitType : formData.unitType,
           status: formData.status,
           lastActivityDate: currentDate, // Always set to current date
           followUpDate: formData.followUpDate,
@@ -590,24 +661,24 @@ export default function AddLeadPage() {
             leadId: leadId,
             description: 'Lead created',
             timestamp: new Date().toISOString()
-          }]
+          }],
+          // Include custom field values (excluding mobileNumber and companyLocation)
+          ...restCustom
         };
         
         // Simulate API call delay
         await new Promise(resolve => setTimeout(resolve, 1000));
         
-        addLead(newLead);
+        // Get current column configuration to ensure all fields have defaults
+        const visibleColumns = getVisibleColumns();
+        
+        addLead(newLead, visibleColumns);
+        
+        // Set flag to notify dashboard of successful lead addition
+        localStorage.setItem('leadAdded', 'true');
         
         // Reset form after successful submission
         setFormData({
-          kva: '',
-          connectionDate: '',
-          consumerNumber: '',
-          company: '',
-          clientName: '',
-          discom: '',
-          gidc: '',
-          gstNumber: '',
           mobileNumber: '', // Keep for backward compatibility
           mobileNumbers: [
             { id: '1', number: '', name: '', isMain: true },
@@ -623,6 +694,9 @@ export default function AddLeadPage() {
           notes: '',
         });
         
+        // Reset custom fields
+        setCustomFields({});
+        
         // Navigate back to appropriate page
         if (cameFromHome) {
           router.push('/');
@@ -636,7 +710,16 @@ export default function AddLeadPage() {
             'all-leads': '/all-leads',
             'dashboard': '/dashboard'
           };
-          const targetRoute = routeMap[sourcePage] || '/dashboard';
+          
+          // Check if we have tab information for due-today
+          const returnTab = localStorage.getItem('returnTab');
+          let targetRoute = routeMap[sourcePage] || '/dashboard';
+          
+          if (sourcePage === 'due-today' && returnTab) {
+            targetRoute = `/due-today?tab=${returnTab}`;
+            localStorage.removeItem('returnTab'); // Clean up after use
+          }
+          
           router.push(targetRoute);
         } else {
           router.push('/dashboard');
@@ -661,8 +744,8 @@ export default function AddLeadPage() {
     const modalReturnData = localStorage.getItem('modalReturnData');
     if (modalReturnData) {
       try {
-        const { sourcePage: modalSourcePage, leadId } = JSON.parse(modalReturnData);
-        // Navigate back to the specific source page with modal return flag
+        const { sourcePage: modalSourcePage, tab } = JSON.parse(modalReturnData);
+        // Navigate back to the specific source page without reopening modal
         const routeMap: { [key: string]: string } = {
           'documentation': '/follow-up-mandate?tab=pending',
           'mandate-sent': '/follow-up-mandate?tab=signed',
@@ -671,12 +754,14 @@ export default function AddLeadPage() {
           'all-leads': '/all-leads',
           'dashboard': '/dashboard'
         };
-        const targetRoute = routeMap[modalSourcePage] || '/dashboard';
-        // Add modal return parameters while preserving existing parameters
-        const url = new URL(targetRoute, window.location.origin);
-        url.searchParams.set('returnToModal', 'true');
-        url.searchParams.set('leadId', leadId);
-        router.push(url.pathname + url.search);
+        
+        // Handle tab-specific navigation for due-today
+        let targetRoute = routeMap[modalSourcePage] || '/dashboard';
+        if (modalSourcePage === 'due-today' && tab) {
+          targetRoute = `/due-today?tab=${tab}`;
+        }
+        
+        router.push(targetRoute);
         localStorage.removeItem('modalReturnData');
         return;
       } catch (error) {
@@ -814,431 +899,272 @@ export default function AddLeadPage() {
         
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-2 pb-2" noValidate>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <label htmlFor="kva" className="block text-[11px] font-medium text-black">
-                KVA <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                id="kva"
-                name="kva"
-                value={formData.kva}
-                onChange={handleChange}
-                className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs ${
-                  errors.kva ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                }`}
-                placeholder="Enter KVA"
-                disabled={isSubmitting}
-              />
-              {errors.kva && (
-                <p className="text-xs text-red-600 flex items-center">
-                  <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.kva}
-                </p>
-              )}
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="connectionDate" className="block text-[11px] font-medium text-black">
-                Connection Date
-              </label>
-              <input
-                type="text"
-                id="connectionDate"
-                name="connectionDate"
-                value={formData.connectionDate}
-                onChange={handleConnectionDateChange}
-                className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs ${
-                  errors.connectionDate ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                }`}
-                placeholder="DD-MM-YYYY"
-                disabled={isSubmitting}
-                maxLength={10}
-              />
-              {errors.connectionDate && (
-                <p className="text-xs text-red-600 flex items-center">
-                  <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.connectionDate}
-                </p>
-              )}
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="consumerNumber" className="block text-[11px] font-medium text-black">
-                Consumer Number <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="tel"
-                id="consumerNumber"
-                name="consumerNumber"
-                value={formData.consumerNumber}
-                onChange={handleChange}
-                className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs ${
-                  errors.consumerNumber ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                }`}
-                placeholder="Enter consumer number"
-                disabled={isSubmitting}
-              />
-              {errors.consumerNumber && (
-                <p className="text-xs text-red-600 flex items-center">
-                  <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.consumerNumber}
-                </p>
-              )}
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="company" className="block text-[11px] font-medium text-black">
-                Company Name <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                id="company"
-                name="company"
-                value={formData.company}
-                onChange={handleChange}
-                className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs ${
-                  errors.company ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                }`}
-                placeholder="Enter company name"
-                disabled={isSubmitting}
-              />
-              {errors.company && (
-                <p className="text-xs text-red-600 flex items-center">
-                  <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.company}
-                </p>
-              )}
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="clientName" className="block text-[11px] font-medium text-black">
-                Client Name <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                id="clientName"
-                name="clientName"
-                value={formData.clientName}
-                onChange={handleChange}
-                className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs ${
-                  errors.clientName ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                }`}
-                placeholder="Enter client name"
-                disabled={isSubmitting}
-              />
-              {errors.clientName && (
-                <p className="text-xs text-red-600 flex items-center">
-                  <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.clientName}
-                </p>
-              )}
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="discom" className="block text-[11px] font-medium text-black">
-                Discom
-              </label>
-              <select
-                id="discom"
-                name="discom"
-                value={formData.discom}
-                onChange={handleChange}
-                className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs"
-                disabled={isSubmitting}
-              >
-                <option value="">Select Discom</option>
-                <option value="UGVCL">UGVCL</option>
-                <option value="MGVCL">MGVCL</option>
-                <option value="DGVCL">DGVCL</option>
-                <option value="PGVCL">PGVCL</option>
-              </select>
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="gidc" className="block text-[11px] font-medium text-black">
-                GIDC
-              </label>
-              <input
-                type="text"
-                id="gidc"
-                name="gidc"
-                value={formData.gidc || ''}
-                onChange={handleChange}
-                className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs"
-                placeholder="Enter GIDC"
-                disabled={isSubmitting}
-              />
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="gstNumber" className="block text-[11px] font-medium text-black">
-                GST Number
-              </label>
-              <input
-                type="text"
-                id="gstNumber"
-                name="gstNumber"
-                value={formData.gstNumber || ''}
-                onChange={handleChange}
-                className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs"
-                placeholder="Enter GST Number"
-                disabled={isSubmitting}
-              />
-            </div>
-            
-            {/* Mobile Numbers Section */}
-            <div className="md:col-span-2 space-y-2">
-              <label className="block text-[11px] font-medium text-black">
-                Mobile Numbers
-              </label>
-              <div className="space-y-1">
-                {formData.mobileNumbers.map((mobile, index) => (
-                  <div key={mobile.id} className="space-y-1">
-                    <div className="flex items-center space-x-1">
-                      <div className="flex-1">
-                        <input
-                          type="text"
-                          value={mobile.name}
-                          onChange={(e) => handleMobileNameChange(index, e.target.value)}
-                          className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black"
-                          placeholder={`Contact ${index + 1}`}
-                          disabled={isSubmitting}
-                        />
-                      </div>
-                      <div className="flex-1">
-                        <input
-                          type="text"
-                          value={mobile.number}
-                          onChange={(e) => handleMobileNumberChange(index, e.target.value)}
-                          className={`w-full px-2 py-1 text-xs border rounded focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black ${
-                            errors[`mobileNumber_${index}` as keyof typeof formData] ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                          }`}
-                          placeholder={`Mobile ${index + 1}`}
-                          disabled={isSubmitting}
-                          pattern="[0-9]*"
-                          inputMode="numeric"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleMainMobileNumberChange(index)}
-                        disabled={isSubmitting}
-                        className={`flex items-center space-x-1 px-1 py-1 text-xs rounded border transition-all duration-200 ${
-                          mobile.isMain
-                            ? 'border-purple-500 bg-purple-50 text-purple-700'
-                            : 'border-gray-300 bg-white text-gray-600 hover:border-purple-300 hover:bg-purple-25'
-                        }`}
-                      >
-                        <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${
-                          mobile.isMain ? 'border-purple-500 bg-purple-500' : 'border-gray-400'
-                        }`}>
-                          {mobile.isMain && (
-                            <div className="w-1.5 h-1.5 rounded-full bg-white"></div>
-                          )}
+          {/* Basic Information Section */}
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold text-black border-b border-gray-200 pb-1">
+              Basic Information
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {/* Mobile Numbers Section */}
+              <div className="md:col-span-2 space-y-2">
+                <label className="block text-[11px] font-medium text-black">
+                  Mobile Numbers
+                </label>
+                <div className="space-y-1">
+                  {formData.mobileNumbers.map((mobile, index) => (
+                    <div key={mobile.id} className="space-y-1">
+                      <div className="flex items-center space-x-1">
+                        <div className="flex-1">
+                          <input
+                            type="text"
+                            value={mobile.name}
+                            onChange={(e) => handleMobileNameChange(index, e.target.value)}
+                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black"
+                            placeholder={`Contact ${index + 1}`}
+                            disabled={isSubmitting}
+                          />
                         </div>
-                        <span className="font-medium">
-                          {mobile.isMain ? 'Main' : 'Main'}
-                        </span>
-                      </button>
-                      {index === 0 && (
+                        <div className="flex-1">
+                          <input
+                            type="text"
+                            value={mobile.number}
+                            onChange={(e) => handleMobileNumberChange(index, e.target.value)}
+                            className={`w-full px-2 py-1 text-xs border rounded focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black ${
+                              errors[`mobileNumber_${index}` as keyof typeof formData] ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                            }`}
+                            placeholder={`Mobile ${index + 1}`}
+                            disabled={isSubmitting}
+                            pattern="[0-9]*"
+                            inputMode="numeric"
+                          />
+                        </div>
                         <button
                           type="button"
-                          onClick={triggerAutoDetection}
-                          className="px-2 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors duration-200"
+                          onClick={() => handleMainMobileNumberChange(index)}
                           disabled={isSubmitting}
+                          className={`flex items-center space-x-1 px-1 py-1 text-xs rounded border transition-all duration-200 ${
+                            mobile.isMain
+                              ? 'border-purple-500 bg-purple-50 text-purple-700'
+                              : 'border-gray-300 bg-white text-gray-600 hover:border-purple-300 hover:bg-purple-25'
+                          }`}
                         >
-                          Auto-Detect
+                          <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${
+                            mobile.isMain ? 'border-purple-500 bg-purple-500' : 'border-gray-400'
+                          }`}>
+                            {mobile.isMain && (
+                              <div className="w-1.5 h-1.5 rounded-full bg-white"></div>
+                            )}
+                          </div>
+                          <span className="font-medium">
+                            {mobile.isMain ? 'Main' : 'Main'}
+                          </span>
                         </button>
+                        {index === 0 && (
+                          <button
+                            type="button"
+                            onClick={triggerAutoDetection}
+                            className="px-2 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors duration-200"
+                            disabled={isSubmitting}
+                          >
+                            Auto-Detect
+                          </button>
+                        )}
+                      </div>
+                      {errors[`mobileNumber_${index}` as keyof typeof formData] && (
+                        <p className="text-xs text-red-600 flex items-center">
+                          <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                          {errors[`mobileNumber_${index}` as keyof typeof formData]}
+                        </p>
                       )}
                     </div>
-                    {errors[`mobileNumber_${index}` as keyof typeof formData] && (
-                      <p className="text-xs text-red-600 flex items-center">
-                        <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                        </svg>
-                        {errors[`mobileNumber_${index}` as keyof typeof formData]}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-              {errors.mobileNumbers && (
-                <p className="text-xs text-red-600 flex items-center">
-                  <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.mobileNumbers}
-                </p>
-              )}
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="companyLocation" className="block text-[11px] font-medium text-black">
-                Address
-              </label>
-              <input
-                type="text"
-                id="companyLocation"
-                name="companyLocation"
-                value={formData.companyLocation}
-                onChange={handleChange}
-                className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs"
-                placeholder="Enter address"
-                disabled={isSubmitting}
-              />
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="unitType" className="block text-[11px] font-medium text-black">
-                Unit Type <span className="text-red-500">*</span>
-              </label>
-              <select
-                id="unitType"
-                name="unitType"
-                value={formData.unitType}
-                onChange={handleChange}
-                required
-                className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs"
-                disabled={isSubmitting}
-              >
-                <option value="New">New</option>
-                <option value="Existing">Existing</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="status" className="block text-[11px] font-medium text-black">
-                Lead Status <span className="text-red-500">*</span>
-              </label>
-              <select
-                id="status"
-                name="status"
-                value={formData.status}
-                onChange={handleChange}
-                required
-                className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs"
-                disabled={isSubmitting}
-              >
-                <option value="New">New</option>
-                <option value="CNR">CNR</option>
-                <option value="Busy">Busy</option>
-                <option value="Follow-up">Follow-up</option>
-                <option value="Deal Close">Deal Close</option>
-                <option value="Work Alloted">Work Alloted</option>
-                <option value="Hotlead">Hotlead</option>
-                <option value="Mandate Sent">Mandate Sent</option>
-                <option value="Documentation">Documentation</option>
-                <option value="Others">Others</option>
-              </select>
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="lastActivityDate" className="block text-[11px] font-medium text-black">
-                Last Activity Date
-              </label>
-              <div className="relative">
-                <input
-                  type="date"
-                  id="lastActivityDate"
-                  name="lastActivityDate"
-                  value={formData.lastActivityDate ? (() => {
-                    // Convert DD-MM-YYYY to YYYY-MM-DD for date input
-                    const [day, month, year] = formData.lastActivityDate.split('-');
-                    return `${year}-${month}-${day}`;
-                  })() : ''}
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      // Convert YYYY-MM-DD to DD-MM-YYYY
-                      const [year, month, day] = e.target.value.split('-');
-                      const formattedDate = `${day}-${month}-${year}`;
-                      setFormData(prev => ({
-                        ...prev,
-                        lastActivityDate: formattedDate
-                      }));
-                    } else {
-                      // Handle clear button - set lastActivityDate to empty string
-                      setFormData(prev => ({
-                        ...prev,
-                        lastActivityDate: ''
-                      }));
-                    }
-                  }}
-                  className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs"
-                  disabled={isSubmitting}
-                />
-              </div>
-            </div>
-            
-            <div className="space-y-1">
-              <label htmlFor="followUpDate" className="block text-[11px] font-medium text-black">
-                Next Follow-up Date
-                {['Follow-up', 'Hotlead', 'Mandate Sent', 'Documentation', 'Meeting Requested', 'Work Confirmation Pending'].includes(formData.status) && (
-                  <span className="text-red-500">*</span>
+                  ))}
+                </div>
+                {errors.mobileNumbers && (
+                  <p className="text-xs text-red-600 flex items-center">
+                    <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    {errors.mobileNumbers}
+                  </p>
                 )}
-              </label>
-              <div className="relative">
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="companyLocation" className="block text-[11px] font-medium text-black">
+                  Address
+                </label>
                 <input
-                  type="date"
-                  id="followUpDate"
-                  name="followUpDate"
-                  value={formData.followUpDate ? (() => {
-                    // Convert DD-MM-YYYY to YYYY-MM-DD for date input
-                    const [day, month, year] = formData.followUpDate.split('-');
-                    return `${year}-${month}-${day}`;
-                  })() : ''}
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      // Convert YYYY-MM-DD to DD-MM-YYYY
-                      const [year, month, day] = e.target.value.split('-');
-                      const formattedDate = `${day}-${month}-${year}`;
-                      setFormData(prev => ({
-                        ...prev,
-                        followUpDate: formattedDate
-                      }));
-                    } else {
-                      // Handle clear button - set followUpDate to empty string
-                      setFormData(prev => ({
-                        ...prev,
-                        followUpDate: ''
-                      }));
-                    }
-                    // Clear error if exists
-                    if (errors.followUpDate) {
-                      setErrors(prev => {
-                        const newErrors = { ...prev };
-                        delete newErrors.followUpDate;
-                        return newErrors;
-                      });
-                    }
-                  }}
-                  min={new Date().toISOString().split('T')[0]}
-                  className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs ${
-                    errors.followUpDate ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                  }`}
+                  type="text"
+                  id="companyLocation"
+                  name="companyLocation"
+                  value={formData.companyLocation}
+                  onChange={handleChange}
+                  className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black"
+                  placeholder="Enter address"
                   disabled={isSubmitting}
                 />
               </div>
-              {errors.followUpDate && (
-                <p className="text-xs text-red-600 flex items-center">
-                  <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.followUpDate}
-                </p>
-              )}
+              
+              <div className="space-y-1">
+                <label htmlFor="unitType" className="block text-[11px] font-medium text-black">
+                  Unit Type <span className="text-red-500">*</span>
+                </label>
+                <select
+                  id="unitType"
+                  name="unitType"
+                  value={formData.unitType}
+                  onChange={handleChange}
+                  required
+                  className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black"
+                  disabled={isSubmitting}
+                >
+                  <option value="New">New</option>
+                  <option value="Existing">Existing</option>
+                  <option value="Other">Other</option>
+                </select>
+                {formData.unitType === 'Other' && (
+                  <input
+                    type="text"
+                    placeholder="Enter custom unit type..."
+                    value={customUnitType}
+                    onChange={(e) => setCustomUnitType(e.target.value)}
+                    className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs mt-1 ${
+                      errors.unitType ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                    }`}
+                    disabled={isSubmitting}
+                    required
+                  />
+                )}
+                {errors.unitType && (
+                  <p className="text-red-500 text-xs mt-1">{errors.unitType}</p>
+                )}
+              </div>
+              
+              <div className="space-y-1">
+                <label htmlFor="status" className="block text-[11px] font-medium text-black">
+                  Lead Status <span className="text-red-500">*</span>
+                </label>
+                <select
+                  id="status"
+                  name="status"
+                  value={formData.status}
+                  onChange={handleChange}
+                  required
+                  className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black"
+                  disabled={isSubmitting}
+                >
+                  <option value="New">New</option>
+                  <option value="CNR">CNR</option>
+                  <option value="Busy">Busy</option>
+                  <option value="Follow-up">Follow-up</option>
+                  <option value="Deal Close">Deal Close</option>
+                  <option value="Work Alloted">WAO</option>
+                  <option value="Hotlead">Hotlead</option>
+                  <option value="Mandate Sent">Mandate Sent</option>
+                  <option value="Documentation">Documentation</option>
+                  <option value="Others">Others</option>
+                </select>
+              </div>
+              
+              <div className="space-y-1">
+                <label htmlFor="lastActivityDate" className="block text-[11px] font-medium text-black">
+                  Last Activity Date
+                </label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    id="lastActivityDate"
+                    name="lastActivityDate"
+                    value={formData.lastActivityDate ? (() => {
+                      // Convert DD-MM-YYYY to YYYY-MM-DD for date input
+                      const [day, month, year] = formData.lastActivityDate.split('-');
+                      return `${year}-${month}-${day}`;
+                    })() : ''}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        // Convert YYYY-MM-DD to DD-MM-YYYY
+                        const [year, month, day] = e.target.value.split('-');
+                        const formattedDate = `${day}-${month}-${year}`;
+                        setFormData(prev => ({
+                          ...prev,
+                          lastActivityDate: formattedDate
+                        }));
+                      } else {
+                        // Handle clear button - set lastActivityDate to empty string
+                        setFormData(prev => ({
+                          ...prev,
+                          lastActivityDate: ''
+                        }));
+                      }
+                    }}
+                    className={`w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black ${
+                      isEditMode ? 'bg-gray-100 cursor-not-allowed' : ''
+                    }`}
+                    disabled={isSubmitting || isEditMode}
+                    readOnly={isEditMode}
+                  />
+                </div>
+              </div>
+              
+              <div className="space-y-1">
+                <label htmlFor="followUpDate" className="block text-[11px] font-medium text-black">
+                  Next Follow-up Date
+                  {['Follow-up', 'Hotlead', 'Mandate Sent', 'Documentation', 'Meeting Requested', 'Work Confirmation Pending'].includes(formData.status) && (
+                    <span className="text-red-500">*</span>
+                  )}
+                </label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    id="followUpDate"
+                    name="followUpDate"
+                    value={formData.followUpDate ? (() => {
+                      // Convert DD-MM-YYYY to YYYY-MM-DD for date input
+                      const [day, month, year] = formData.followUpDate.split('-');
+                      return `${year}-${month}-${day}`;
+                    })() : ''}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        // Convert YYYY-MM-DD to DD-MM-YYYY
+                        const [year, month, day] = e.target.value.split('-');
+                        const formattedDate = `${day}-${month}-${year}`;
+                        setFormData(prev => ({
+                          ...prev,
+                          followUpDate: formattedDate
+                        }));
+                      } else {
+                        // Handle clear button - set followUpDate to empty string
+                        setFormData(prev => ({
+                          ...prev,
+                          followUpDate: ''
+                        }));
+                      }
+                      // Clear error if exists
+                      if (errors.followUpDate) {
+                        setErrors(prev => {
+                          const newErrors = { ...prev };
+                          delete newErrors.followUpDate;
+                          return newErrors;
+                        });
+                      }
+                    }}
+                    min={new Date().toISOString().split('T')[0]}
+                    className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black ${
+                      errors.followUpDate ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                    }`}
+                    disabled={isSubmitting}
+                  />
+                </div>
+                {errors.followUpDate && (
+                  <p className="text-xs text-red-600 flex items-center">
+                    <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    {errors.followUpDate}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1255,7 +1181,7 @@ export default function AddLeadPage() {
               value={formData.notes}
               onChange={handleChange}
               rows={2}
-              className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 resize-vertical text-black text-xs"
+              className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 resize-vertical text-black text-xs placeholder:text-black"
               placeholder="Enter details about the last discussion with this lead"
               disabled={isSubmitting}
             />
@@ -1268,6 +1194,141 @@ export default function AddLeadPage() {
               </p>
             )}
           </div>
+
+          {/* Dynamic Custom Fields Section */}
+          {(() => {
+            const visibleColumns = getVisibleColumns();
+            const customColumns = visibleColumns.filter(col => !permanentFields.includes(col.fieldKey));
+            
+            if (customColumns.length === 0) return null;
+            
+            return (
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold text-black border-b border-gray-200 pb-1">
+                  Additional Fields
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {customColumns.map((column) => (
+                    <div key={column.fieldKey} className="space-y-1">
+                      <label htmlFor={column.fieldKey} className="block text-[11px] font-medium text-black">
+                        {column.label}
+                        {column.required && <span className="text-red-500">*</span>}
+                      </label>
+                      
+                      {column.type === 'text' && (
+                        <input
+                          type="text"
+                          id={column.fieldKey}
+                          value={customFields[column.fieldKey] || ''}
+                          onChange={(e) => handleCustomFieldChange(column.fieldKey, e.target.value)}
+                          className={`w-full px-2 py-1 border rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black ${
+                            errors[`custom_${column.fieldKey}` as keyof typeof formData] ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                          }`}
+                          placeholder={`Enter ${column.label.toLowerCase()}`}
+                          disabled={isSubmitting}
+                        />
+                      )}
+                      
+                      {column.type === 'date' && (
+                        <input
+                          type="date"
+                          id={column.fieldKey}
+                          value={customFields[column.fieldKey] ? (() => {
+                            // Convert DD-MM-YYYY to YYYY-MM-DD for date input
+                            const dateStr = customFields[column.fieldKey];
+                            if (dateStr.match(/^\d{2}-\d{2}-\d{4}$/)) {
+                              const [day, month, year] = dateStr.split('-');
+                              return `${year}-${month}-${day}`;
+                            }
+                            return dateStr;
+                          })() : ''}
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              // Convert YYYY-MM-DD to DD-MM-YYYY
+                              const [year, month, day] = e.target.value.split('-');
+                              const formattedDate = `${day}-${month}-${year}`;
+                              handleCustomFieldChange(column.fieldKey, formattedDate);
+                            } else {
+                              handleCustomFieldChange(column.fieldKey, '');
+                            }
+                          }}
+                          className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black"
+                          disabled={isSubmitting}
+                        />
+                      )}
+                      
+                      {column.type === 'select' && (
+                        <select
+                          id={column.fieldKey}
+                          value={customFields[column.fieldKey] || ''}
+                          onChange={(e) => handleCustomFieldChange(column.fieldKey, e.target.value)}
+                          className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black"
+                          disabled={isSubmitting}
+                        >
+                          <option value="">Select {column.label}</option>
+                          {column.options?.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      
+                      {column.type === 'number' && (
+                        <input
+                          type="number"
+                          id={column.fieldKey}
+                          value={customFields[column.fieldKey] || ''}
+                          onChange={(e) => handleCustomFieldChange(column.fieldKey, e.target.value)}
+                          className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black"
+                          placeholder={`Enter ${column.label.toLowerCase()}`}
+                          disabled={isSubmitting}
+                        />
+                      )}
+                      
+                      {column.type === 'email' && (
+                        <input
+                          type="email"
+                          id={column.fieldKey}
+                          value={customFields[column.fieldKey] || ''}
+                          onChange={(e) => handleCustomFieldChange(column.fieldKey, e.target.value)}
+                          className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black"
+                          placeholder={`Enter ${column.label.toLowerCase()}`}
+                          disabled={isSubmitting}
+                        />
+                      )}
+                      
+                      {column.type === 'phone' && (
+                        <input
+                          type="tel"
+                          id={column.fieldKey}
+                          value={customFields[column.fieldKey] || ''}
+                          onChange={(e) => {
+                            // Only allow numeric input for phone
+                            const numericValue = e.target.value.replace(/[^0-9]/g, '').slice(0, 10);
+                            handleCustomFieldChange(column.fieldKey, numericValue);
+                          }}
+                          className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors duration-200 text-black text-xs placeholder:text-black"
+                          placeholder={`Enter ${column.label.toLowerCase()}`}
+                          disabled={isSubmitting}
+                        />
+                      )}
+                      
+                      {/* Error display for custom fields */}
+                      {errors[`custom_${column.fieldKey}` as keyof typeof formData] && (
+                        <p className="text-xs text-red-600 flex items-center">
+                          <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                          {errors[`custom_${column.fieldKey}` as keyof typeof formData]}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
           
           {/* Form Actions */}
           <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-gray-200">

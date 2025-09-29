@@ -1,99 +1,136 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 
 interface PerformanceMetrics {
-  fcp: number | null;
-  lcp: number | null;
-  fid: number | null;
-  cls: number | null;
-  ttfb: number | null;
+  renderTime: number;
+  memoryUsage: number;
+  leadCount: number;
+  filterCount: number;
 }
 
-export default function PerformanceMonitor() {
+interface PerformanceMonitorProps {
+  leadCount: number;
+  filterCount: number;
+  onPerformanceIssue?: (metrics: PerformanceMetrics) => void;
+}
+
+const PerformanceMonitor: React.FC<PerformanceMonitorProps> = ({
+  leadCount,
+  filterCount,
+  onPerformanceIssue
+}) => {
   const [metrics, setMetrics] = useState<PerformanceMetrics>({
-    fcp: null,
-    lcp: null,
-    fid: null,
-    cls: null,
-    ttfb: null,
+    renderTime: 0,
+    memoryUsage: 0,
+    leadCount: 0,
+    filterCount: 0
   });
 
+  const [isVisible, setIsVisible] = useState(false);
+
+  const measurePerformance = useCallback(() => {
+    const startTime = performance.now();
+    
+    // Simulate render measurement
+    requestAnimationFrame(() => {
+      const endTime = performance.now();
+      const renderTime = endTime - startTime;
+      
+      // Get memory usage if available
+      const memoryUsage = (performance as any).memory 
+        ? (performance as any).memory.usedJSHeapSize / 1024 / 1024 
+        : 0;
+
+      const newMetrics: PerformanceMetrics = {
+        renderTime,
+        memoryUsage,
+        leadCount,
+        filterCount
+      };
+
+      setMetrics(newMetrics);
+
+      // Check for performance issues
+      if (renderTime > 16 || memoryUsage > 100 || leadCount > 1000) {
+        onPerformanceIssue?.(newMetrics);
+      }
+    });
+  }, [leadCount, filterCount, onPerformanceIssue]);
+
   useEffect(() => {
-    if (typeof window === 'undefined' || process.env.NODE_ENV !== 'development') {
-      return;
-    }
+    measurePerformance();
+  }, [measurePerformance]);
 
-    // First Contentful Paint
-    const fcpObserver = new PerformanceObserver((list) => {
-      const entries = list.getEntries();
-      const fcpEntry = entries.find(entry => entry.name === 'first-contentful-paint');
-      if (fcpEntry) {
-        setMetrics(prev => ({ ...prev, fcp: fcpEntry.startTime }));
+  // Toggle visibility with Ctrl+Shift+P
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+        setIsVisible(prev => !prev);
       }
-    });
-    fcpObserver.observe({ entryTypes: ['paint'] });
-
-    // Largest Contentful Paint
-    const lcpObserver = new PerformanceObserver((list) => {
-      const entries = list.getEntries();
-      const lastEntry = entries[entries.length - 1];
-      if (lastEntry) {
-        setMetrics(prev => ({ ...prev, lcp: lastEntry.startTime }));
-      }
-    });
-    lcpObserver.observe({ entryTypes: ['largest-contentful-paint'] });
-
-    // First Input Delay
-    const fidObserver = new PerformanceObserver((list) => {
-      const entries = list.getEntries();
-      entries.forEach((entry: PerformanceEntry & { processingStart?: number }) => {
-        if (entry.processingStart !== undefined) {
-          setMetrics(prev => ({ ...prev, fid: entry.processingStart! - entry.startTime }));
-        }
-      });
-    });
-    fidObserver.observe({ entryTypes: ['first-input'] });
-
-    // Cumulative Layout Shift
-    let clsValue = 0;
-    const clsObserver = new PerformanceObserver((list) => {
-      const entries = list.getEntries();
-      entries.forEach((entry: PerformanceEntry & { hadRecentInput?: boolean; value?: number }) => {
-        if (!entry.hadRecentInput && entry.value) {
-          clsValue += entry.value;
-        }
-      });
-      setMetrics(prev => ({ ...prev, cls: clsValue }));
-    });
-    clsObserver.observe({ entryTypes: ['layout-shift'] });
-
-    // Time to First Byte
-    const navigationEntry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
-    if (navigationEntry) {
-      setMetrics(prev => ({ ...prev, ttfb: navigationEntry.responseStart - navigationEntry.requestStart }));
-    }
-
-    return () => {
-      fcpObserver.disconnect();
-      lcpObserver.disconnect();
-      fidObserver.disconnect();
-      clsObserver.disconnect();
     };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  if (process.env.NODE_ENV !== 'development') {
-    return null;
-  }
+  if (!isVisible) return null;
+
+  const getPerformanceColor = (value: number, thresholds: [number, number]) => {
+    if (value <= thresholds[0]) return 'text-green-600';
+    if (value <= thresholds[1]) return 'text-yellow-600';
+    return 'text-red-600';
+  };
 
   return (
-    <div className="fixed bottom-4 left-4 bg-black bg-opacity-80 text-white p-4 rounded-lg text-xs font-mono z-50">
-      <div className="font-bold mb-2">Performance Metrics</div>
-      <div>FCP: {metrics.fcp ? `${metrics.fcp.toFixed(2)}ms` : 'Loading...'}</div>
-      <div>LCP: {metrics.lcp ? `${metrics.lcp.toFixed(2)}ms` : 'Loading...'}</div>
-      <div>FID: {metrics.fid ? `${metrics.fid.toFixed(2)}ms` : 'Loading...'}</div>
-      <div>CLS: {metrics.cls ? metrics.cls.toFixed(4) : 'Loading...'}</div>
-      <div>TTFB: {metrics.ttfb ? `${metrics.ttfb.toFixed(2)}ms` : 'Loading...'}</div>
+    <div className="fixed bottom-4 right-4 bg-white border border-gray-300 rounded-lg shadow-lg p-4 z-50 max-w-xs">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-sm font-semibold text-gray-800">Performance Monitor</h3>
+        <button
+          onClick={() => setIsVisible(false)}
+          className="text-gray-500 hover:text-gray-700 text-xs"
+        >
+          ✕
+        </button>
+      </div>
+      
+      <div className="space-y-2 text-xs">
+        <div className="flex justify-between">
+          <span className="text-gray-600">Render Time:</span>
+          <span className={getPerformanceColor(metrics.renderTime, [8, 16])}>
+            {metrics.renderTime.toFixed(2)}ms
+          </span>
+        </div>
+        
+        <div className="flex justify-between">
+          <span className="text-gray-600">Memory Usage:</span>
+          <span className={getPerformanceColor(metrics.memoryUsage, [50, 100])}>
+            {metrics.memoryUsage.toFixed(1)}MB
+          </span>
+        </div>
+        
+        <div className="flex justify-between">
+          <span className="text-gray-600">Lead Count:</span>
+          <span className={getPerformanceColor(metrics.leadCount, [500, 1000])}>
+            {metrics.leadCount}
+          </span>
+        </div>
+        
+        <div className="flex justify-between">
+          <span className="text-gray-600">Filter Count:</span>
+          <span className={getPerformanceColor(metrics.filterCount, [5, 10])}>
+            {metrics.filterCount}
+          </span>
+        </div>
+      </div>
+      
+      <div className="mt-3 pt-2 border-t border-gray-200">
+        <p className="text-xs text-gray-500">
+          Press Ctrl+Shift+P to toggle
+        </p>
+      </div>
     </div>
   );
-}
+};
+
+export default PerformanceMonitor;

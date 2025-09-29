@@ -29,6 +29,9 @@
   src: url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
 }
 
+/* Gujarati font support */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Gujarati:wght@400;500;600;700&display=swap');
+
 /* Reduce layout shift */
 .navbar {
   contain: layout style;
@@ -134,7 +137,7 @@ html, body {
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-sans), system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-sans), 'Noto Sans Gujarati', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   line-height: 1.6;
   letter-spacing: -0.01em;
   overflow-x: hidden;
@@ -146,9 +149,16 @@ h1, h2, h3, h4, h5, h6 {
   letter-spacing: -0.02em;
 }
 
-input, textarea, select, button {
-  font-family: inherit;
-  transition: all var(--transition-normal);
+/* Gujarati text support */
+.gujarati-text {
+  font-family: 'Noto Sans Gujarati', var(--font-sans), system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-feature-settings: "liga" 1, "kern" 1;
+  text-rendering: optimizeLegibility;
+}
+
+/* Ensure proper Unicode support for all text inputs */
+input, textarea, select {
+  font-family: var(--font-sans), 'Noto Sans Gujarati', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 .card-hover {

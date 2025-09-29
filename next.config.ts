@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
   // Performance optimizations
   experimental: {
     optimizePackageImports: ['framer-motion', 'lucide-react', 'recharts'],
+    webpackBuildWorker: true,
   },
   
   // Image optimization
@@ -17,8 +18,40 @@ const nextConfig: NextConfig = {
     minimumCacheTTL: 60,
   },
   
-  // Compression
+  // Compression and optimization
   compress: true,
+  poweredByHeader: false,
+  
+  // Bundle optimization
+  webpack: (config, { isServer, dev }) => {
+    if (!isServer) {
+      // Optimize for production builds
+      if (!dev) {
+        config.optimization.splitChunks = {
+          chunks: 'all',
+          cacheGroups: {
+            vendor: {
+              test: /[\\/]node_modules[\\/]/,
+              name: 'vendors',
+              chunks: 'all',
+            },
+            common: {
+              name: 'common',
+              minChunks: 2,
+              chunks: 'all',
+              enforce: true,
+            },
+          },
+        };
+      }
+      
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+      };
+    }
+    return config;
+  },
   
   // Bundle analyzer (uncomment to analyze bundle size)
   // webpack: (config, { isServer }) => {

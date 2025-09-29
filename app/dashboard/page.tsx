@@ -1,18 +1,22 @@
 ﻿'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useLeads, Lead, LeadFilters } from '../context/LeadContext';
 import { useNavigation } from '../context/NavigationContext';
-import LeadTable from '../components/LeadTable';
+import { useColumns } from '../context/ColumnContext';
+import EditableTable from '../components/EditableTable';
+import PasswordModal from '../components/PasswordModal';
+import PasswordSettingsModal from '../components/PasswordSettingsModal';
+import LeadDetailModal from '../components/LeadDetailModal';
 import { useRouter } from 'next/navigation';
+import { validateLeadField } from '../hooks/useValidation';
 
 export default function DashboardPage() {
   const router = useRouter();
   const { leads, deleteLead, getFilteredLeads, updateLead } = useLeads();
   const { discomFilter, setDiscomFilter, setOnExportClick } = useNavigation();
-  const [activeFilters, setActiveFilters] = useState<LeadFilters>({
-    status: ['New'] // Show "New" leads by default
-  });
+  const { getVisibleColumns } = useColumns();
+  const [activeFilters, setActiveFilters] = useState<LeadFilters>({});
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showLeadModal, setShowLeadModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -24,19 +28,20 @@ export default function DashboardPage() {
   const [leadToDelete, setLeadToDelete] = useState<Lead | null>(null);
   const [showMassDeleteModal, setShowMassDeleteModal] = useState(false);
   const [leadsToDelete, setLeadsToDelete] = useState<Lead[]>([]);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('info');
   const [showEmptyStatusNotification, setShowEmptyStatusNotification] = useState(false);
   const [emptyStatusMessage, setEmptyStatusMessage] = useState('');
   const [showExportPasswordModal, setShowExportPasswordModal] = useState(false);
-  const [exportPassword, setExportPassword] = useState('');
+  const [passwordSettingsOpen, setPasswordSettingsOpen] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<Record<string, Record<string, string>>>({});
+  const [columnCount, setColumnCount] = useState(0);
   
   // Drag and drop state for status buttons
   const [draggedItem, setDraggedItem] = useState<string | null>(null);
   const [statusOrder, setStatusOrder] = useState<string[]>([
-    'New', 'CNR', 'Busy', 'Follow-up', 'Deal Close', 'Work Alloted', 
+    'New', 'CNR', 'Busy', 'Follow-up', 'Deal Close', 'WAO', 
     'Hotlead', 'Mandate Sent', 'Documentation', 'Others'
   ]);
 
@@ -57,24 +62,112 @@ export default function DashboardPage() {
     }, 3000);
   }, []);
 
+  // Handle cell update
+  const handleCellUpdate = useCallback(async (leadId: string, field: string, value: string) => {
+    try {
+      // Find the lead
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) {
+        throw new Error('Lead not found');
+      }
+
+      // Get current column configuration to validate dynamic fields
+      const visibleColumns = getVisibleColumns();
+      const columnConfig = visibleColumns.find(col => col.fieldKey === field);
+      
+      console.log('🔧 Cell update debug:', { leadId, field, value, columnConfig });
+      
+      // Validate the field (including custom columns)
+      const error = validateLeadField(field as keyof Lead, value, lead, columnConfig);
+      
+      if (error) {
+        // Set validation error
+        setValidationErrors(prev => ({
+          ...prev,
+          [leadId]: {
+            ...prev[leadId],
+            [field]: error
+          }
+        }));
+        throw new Error(error);
+      }
+
+      // Clear validation error if exists
+      setValidationErrors(prev => {
+        const newErrors = { ...prev };
+        if (newErrors[leadId]) {
+          delete newErrors[leadId][field];
+          if (Object.keys(newErrors[leadId]).length === 0) {
+            delete newErrors[leadId];
+          }
+        }
+        return newErrors;
+      });
+
+      // Handle special field formatting
+      let formattedValue = value;
+      if (field === 'mobileNumbers') {
+        // Parse JSON string for mobile numbers
+        try {
+          const mobileNumbers = JSON.parse(value);
+          formattedValue = mobileNumbers;
+        } catch {
+          throw new Error('Invalid mobile numbers format');
+        }
+      } else if (columnConfig?.type === 'date' && value) {
+        // Format date fields consistently
+        formattedValue = formatDateToDDMMYYYY(value);
+      }
+
+      // Update the lead with proper field access using safe property assignment
+      const updatedLead = {
+        ...lead,
+        [field]: formattedValue,
+        lastActivityDate: new Date().toLocaleDateString('en-GB') // DD-MM-YYYY format
+      } as Lead & Record<string, any>; // Allow dynamic properties
+
+      // Only touch activity for important field changes
+      const shouldTouchActivity = ['status', 'followUpDate', 'notes'].includes(field);
+      updateLead(updatedLead, { touchActivity: shouldTouchActivity });
+      showToastNotification('Lead updated successfully!', 'success');
+    } catch (error) {
+      console.error('Error updating cell:', error);
+      showToastNotification(error instanceof Error ? error.message : 'Failed to update lead', 'error');
+      throw error;
+    }
+  }, [leads, updateLead, showToastNotification, getVisibleColumns]);
+
   // Reset selectAll state when filters change
   useEffect(() => {
     setSelectAll(false);
     setSelectedLeads(new Set());
   }, [activeFiltersKey]);
+
+  // Column change detection to force re-render when columns are added/removed
+  useEffect(() => {
+    const currentColumnCount = getVisibleColumns().length;
+    if (currentColumnCount !== columnCount) {
+      console.log('🔄 Column count changed:', columnCount, '->', currentColumnCount);
+      setColumnCount(currentColumnCount);
+      
+      // Force more aggressive re-render by clearing cached filter results
+      // This ensures the table completely re-mounts with new column configuration
+      const tableKey = `table-${currentColumnCount}-${Date.now()}`;
+      console.log('🔄 Forcing table re-mount with key:', tableKey);
+      
+      // Force re-render by updating a dummy state
+      showToastNotification(`Table updated with ${currentColumnCount} columns`, 'info');
+      
+      // Clear any validation errors that might be stale
+      setValidationErrors({});
+    }
+  }, [getVisibleColumns, columnCount, showToastNotification]);
   
-  // Auto-clear status filter when leads are updated to ensure leads disappear when status changes
+  // Show notification when no leads match current status filter
   useEffect(() => {
     if (activeFilters.status && activeFilters.status.length > 0) {
-      // Check if any leads with the current status still exist
-      const filteredLeads = getFilteredLeads(activeFilters);
-      if (filteredLeads.length === 0) {
-        // If no leads match the current status filter, clear the filter
-        setActiveFilters(prev => ({
-          ...prev,
-          status: [] // Clear status filter to show "no status selected" message
-        }));
-      }
+      const filtered = getFilteredLeads(activeFilters);
+      setShowEmptyStatusNotification(filtered.length === 0);
     }
   }, [leads, activeFilters.status, getFilteredLeads]);
 
@@ -100,6 +193,18 @@ export default function DashboardPage() {
     }
   }, [showToastNotification]);
 
+  // Check for lead addition notification
+  useEffect(() => {
+    const leadAdded = localStorage.getItem('leadAdded');
+    if (leadAdded === 'true') {
+      showToastNotification('Lead added successfully! The new lead is now available in the dashboard.', 'success');
+      localStorage.removeItem('leadAdded');
+      
+      // Don't automatically set status filter - let user see all leads by default
+      console.log('✅ Lead added notification received, dashboard will show all leads');
+    }
+  }, [showToastNotification]);
+
   // Set up navigation handlers
   useEffect(() => {
     setOnExportClick(() => handleExportExcel);
@@ -107,17 +212,11 @@ export default function DashboardPage() {
 
   // Handle discom filter changes
   useEffect(() => {
-    if (discomFilter === '') {
-      setActiveFilters({
-        status: ['New'] // Show "New" leads from all discoms when selecting "All Discoms"
-      });
-    } else {
-      setActiveFilters(prev => ({
-        ...prev,
-        discom: discomFilter,
-        status: ['New'] // Automatically show New status when discom is selected
-      }));
-    }
+    setActiveFilters(prev => {
+      const next: LeadFilters = { ...prev };
+      if (!discomFilter) delete next.discom; else next.discom = discomFilter;
+      return next;
+    });
   }, [discomFilter]);
 
   // Check for updated leads and clear main dashboard view if needed
@@ -153,8 +252,7 @@ export default function DashboardPage() {
           document.body.style.overflow = 'unset';
         }
         if (showExportPasswordModal) {
-          setShowExportPasswordModal(false);
-          setExportPassword('');
+        setShowExportPasswordModal(false);
           document.body.style.overflow = 'unset';
         }
       }
@@ -291,7 +389,7 @@ export default function DashboardPage() {
       'Busy': 0,
       'Follow-up': 0,
       'Deal Close': 0,
-      'Work Alloted': 0,
+      'WAO': 0,
       'Hotlead': 0,
       'Mandate Sent': 0,
       'Documentation': 0,
@@ -354,9 +452,13 @@ export default function DashboardPage() {
     
     filteredLeadsForCounts.forEach(lead => {
       console.log(`Lead ${lead.kva}: status="${lead.status}", discom="${lead.discom}"`);
-      if (lead.status in counts) {
-        counts[lead.status as keyof typeof counts]++;
-        console.log(`Incremented count for status: ${lead.status}`);
+      // Map Work Alloted to WAO for counting
+      const statusKey = lead.status === 'Work Alloted' ? 'WAO' : lead.status;
+      if (statusKey in counts) {
+        counts[statusKey as keyof typeof counts]++;
+        console.log(`✅ Incremented count for status: ${statusKey} (original: ${lead.status})`);
+      } else {
+        console.log(`❌ Status key "${statusKey}" not found in counts object`);
       }
     });
 
@@ -364,7 +466,8 @@ export default function DashboardPage() {
     console.log('=== END STATUS COUNTS DEBUG ===');
 
     return counts;
-  }, [leads, activeFilters]);
+  }, [leads, activeFilters, columnCount]);
+
 
   const { dueToday, upcoming, overdue, followUpMandate } = summaryStats;
 
@@ -378,44 +481,7 @@ export default function DashboardPage() {
     document.body.style.overflow = 'hidden';
   };
 
-  // Copy to clipboard function
-  const copyToClipboard = async (text: string, fieldName: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedField(fieldName);
-      setTimeout(() => setCopiedField(null), 2000); // Reset after 2 seconds
-    } catch (err) {
-      console.error('Failed to copy text: ', err);
-    }
-  };
 
-  // WhatsApp redirect function
-  const handleWhatsAppRedirect = (lead: Lead) => {
-    // Get the main phone number
-    const mainPhoneNumber = lead.mobileNumbers && lead.mobileNumbers.length > 0 
-      ? lead.mobileNumbers.find(m => m.isMain)?.number || lead.mobileNumbers[0]?.number || lead.mobileNumber
-      : lead.mobileNumber;
-
-    if (!mainPhoneNumber || mainPhoneNumber.trim() === '') {
-      alert('No phone number available for this lead.');
-      return;
-    }
-
-    // Clean the phone number (remove any non-digit characters)
-    const cleanNumber = mainPhoneNumber.replace(/[^0-9]/g, '');
-    
-    // Check if number is valid (should be 10 digits for Indian numbers)
-    if (cleanNumber.length !== 10) {
-      alert(`Invalid phone number: ${mainPhoneNumber}. Please check the number format.`);
-      return;
-    }
-
-    // Create WhatsApp URL
-    const whatsappUrl = `https://wa.me/91${cleanNumber}`;
-    
-    // Open WhatsApp in new tab
-    window.open(whatsappUrl, '_blank');
-  };
 
 
 
@@ -432,7 +498,12 @@ export default function DashboardPage() {
   // Show export password modal
   const handleExportExcel = () => {
     setShowExportPasswordModal(true);
-    setExportPassword('');
+  };
+
+  // Handle password verification for export
+  const handleExportPasswordSuccess = () => {
+    setShowExportPasswordModal(false);
+    performExport();
   };
 
   // Helper function to format dates for export (DD-MM-YYYY format only)
@@ -465,77 +536,74 @@ export default function DashboardPage() {
 
   // Actual export function with password verification
   const performExport = async () => {
-    // Password verification - you can change this password
-    const EXPORT_PASSWORD = 'admin123'; // Change this to your desired password
-    
-    if (exportPassword !== EXPORT_PASSWORD) {
-      showToastNotification('Incorrect password. Please try again.', 'error');
-      return;
-    }
-
     try {
+      // Small delay to ensure pending header edits are saved
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
       // Dynamic import to avoid turbopack issues
       const XLSX = await import('xlsx');
       
       // Get filtered leads based on current view
       const leadsToExport = getFilteredLeads(activeFilters);
       
-      // Define Excel headers with remapped column names for export
-      const headers = [
-        'con.no', 
-        'KVA', 
-        'Connection Date', 
-        'Company Name', 
-        'Client Name', 
-        'Discom',
-        'GIDC',
-        'GST Number',
-        'Unit Type',
-        'Main Mobile Number', 
-        'Lead Status', 
-        'Last Discussion', 
-        'Address',
-        'Next Follow-up Date',
-        'Last Activity Date',
-        'Mobile Number 2', 
-        'Contact Name 2', 
-        'Mobile Number 3', 
-        'Contact Name 3'
-      ];
+      // Use fresh column configuration to ensure latest columns are included
+      const visibleColumns = getVisibleColumns();
+      console.log('📊 Export Debug - Using columns:', visibleColumns.map(c => c.label));
+      console.log('📊 Export Debug - Column types:', visibleColumns.map(c => ({ label: c.label, type: c.type, fieldKey: c.fieldKey })));
+      const headers = visibleColumns.map(column => column.label);
       
       // Convert leads to Excel rows with remapped data
       const rows = leadsToExport.map(lead => {
         // Get mobile numbers and contacts
         const mobileNumbers = lead.mobileNumbers || [];
         const mainMobile = mobileNumbers.find(m => m.isMain) || mobileNumbers[0] || { number: lead.mobileNumber || '', name: '' };
-        const mobile2 = mobileNumbers[1] || { number: '', name: '' };
-        const mobile3 = mobileNumbers[2] || { number: '', name: '' };
         
         // Format main mobile number (phone number only, no contact name)
         const mainMobileDisplay = mainMobile.number || '';
         console.log('🔍 Export Debug - Lead:', lead.clientName, 'Main Mobile:', mainMobileDisplay);
         
-        return [
-          lead.consumerNumber || '',
-          lead.kva || '',
-          formatDateForExport(lead.connectionDate || ''), // Connection Date
-          lead.company || '',
-          lead.clientName || '',
-          lead.discom || '', // Discom
-          lead.gidc || '', // GIDC
-          lead.gstNumber || '', // GST Number
-          lead.unitType || 'New', // Unit Type
-          mainMobileDisplay, // Main Mobile Number (with contact name if available)
-          lead.status || 'New', // Lead Status
-          lead.notes || '', // Last Discussion
-          lead.companyLocation || (lead.notes && lead.notes.includes('Address:') ? lead.notes.split('Address:')[1]?.trim() || '' : ''), // Address
-          formatDateForExport(lead.followUpDate || ''), // Next Follow-up Date
-          formatDateForExport(lead.lastActivityDate || ''), // Last Activity Date
-          mobile2.number || '', // Mobile Number 2
-          mobile2.name || '', // Contact Name 2
-          mobile3.number || '', // Mobile Number 3
-          mobile3.name || '' // Contact Name 3
-        ];
+        // Map data according to visible columns using safe property access
+        return visibleColumns.map(column => {
+          const fieldKey = column.fieldKey;
+          const value = (lead as any)[fieldKey] ?? '';
+          
+          console.log(`🔍 Export Debug - Field: ${fieldKey}, Value: ${value}, Type: ${column.type}`);
+          
+          // Handle special field formatting
+          switch (fieldKey) {
+            case 'kva':
+              return lead.kva || '';
+            case 'connectionDate':
+              return formatDateForExport(lead.connectionDate || '');
+            case 'consumerNumber':
+              return lead.consumerNumber || '';
+            case 'company':
+              return lead.company || '';
+            case 'clientName':
+              return lead.clientName || '';
+            case 'discom':
+              return lead.discom || '';
+            case 'mobileNumber':
+              return mainMobileDisplay;
+            case 'status':
+              return lead.status === 'Work Alloted' ? 'WAO' : (lead.status || 'New');
+            case 'lastActivityDate':
+              return formatDateForExport(lead.lastActivityDate || '');
+            case 'followUpDate':
+              return formatDateForExport(lead.followUpDate || '');
+            default:
+              // Handle custom columns with proper type checking
+              if (column.type === 'date' && value) {
+                return formatDateForExport(value);
+              } else if (column.type === 'number' && value) {
+                return Number(value) || '';
+              } else if (column.type === 'select' && value) {
+                return value; // Select values are already strings
+              } else {
+                return value || '';
+              }
+          }
+        });
       });
       
       // Create workbook and worksheet
@@ -549,8 +617,7 @@ export default function DashboardPage() {
       XLSX.writeFile(wb, `leads-export-${new Date().toISOString().split('T')[0]}.xlsx`);
       
       // Close modal and show success message
-      setShowExportPasswordModal(false);
-      setExportPassword('');
+        setShowExportPasswordModal(false);
       showToastNotification(`Successfully exported ${leadsToExport.length} leads to Excel format`, 'success');
     } catch (error) {
       console.error('Export error:', error);
@@ -568,7 +635,7 @@ export default function DashboardPage() {
   };
 
   // Generate search suggestions
-  const generateSuggestions = (query: string) => {
+  const generateSuggestions = useCallback((query: string) => {
     if (query.length < 2) {
       setSearchSuggestions([]);
       setShowSuggestions(false);
@@ -620,18 +687,24 @@ export default function DashboardPage() {
 
     setSearchSuggestions(suggestions);
     setShowSuggestions(suggestions.length > 0);
-  };
+  }, [leads]);
 
-  // Handle search input change
-  const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Debounced search input change
+  const handleSearchInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setSearchTerm(value);
     setActiveFilters(prev => ({
       ...prev,
       searchTerm: value
     }));
-    generateSuggestions(value);
-  };
+    
+    // Debounce search suggestions
+    const timeoutId = setTimeout(() => {
+      generateSuggestions(value);
+    }, 300);
+    
+    return () => clearTimeout(timeoutId);
+  }, [generateSuggestions]);
 
   // Handle suggestion click
   const handleSuggestionClick = (lead: Lead) => {
@@ -701,17 +774,18 @@ export default function DashboardPage() {
   const clearAllFilters = () => {
     setSearchTerm('');
     setDiscomFilter('');
-    setActiveFilters({
-      status: [] // Clear to show no leads - user must select a status
-    });
+    setActiveFilters({}); // Clear all filters to show all leads
     setSelectedLeads(new Set());
     setSelectAll(false);
   };
 
   // Handle status filter
-  const handleStatusFilter = (status: Lead['status']) => {
+  const handleStatusFilter = (status: string) => {
+    // Map WAO back to Work Alloted for filtering
+    const actualStatus = status === 'WAO' ? 'Work Alloted' : status as Lead['status'];
+    
     // Check if the status has zero leads
-    if (statusCounts[status] === 0) {
+    if (statusCounts[status as keyof typeof statusCounts] === 0) {
       setEmptyStatusMessage(`Your ${status} lead is empty, please add lead to processed.`);
       setShowEmptyStatusNotification(true);
       // Auto-hide after 3 seconds
@@ -724,7 +798,7 @@ export default function DashboardPage() {
     // Set the status filter - this will show leads with this status (including updated ones)
     setActiveFilters(prev => ({
       ...prev,
-      status: [status]
+      status: [actualStatus]
     }));
     setSelectedLeads(new Set());
     setSelectAll(false);
@@ -782,7 +856,9 @@ export default function DashboardPage() {
 
   // Helper function to get button styling
   const getButtonStyle = (status: string) => {
-    const isActive = activeFilters.status?.length === 1 && activeFilters.status[0] === status;
+    // Map WAO to Work Alloted for active state checking
+    const actualStatus = status === 'WAO' ? 'Work Alloted' : status;
+    const isActive = activeFilters.status?.length === 1 && activeFilters.status[0] === actualStatus;
     const isDragging = draggedItem === status;
     
     const baseClasses = "px-2.5 py-1.5 rounded-md transition-all duration-200 text-xs font-medium flex items-center gap-1 whitespace-nowrap";
@@ -819,7 +895,7 @@ export default function DashboardPage() {
         badge: 'bg-green-500 text-white',
         badgeActive: 'bg-green-900 text-green-100'
       },
-      'Work Alloted': { 
+      'WAO': { 
         active: 'bg-indigo-800 text-white', 
         inactive: 'bg-indigo-600 hover:bg-indigo-700 text-white',
         badge: 'bg-indigo-500 text-white',
@@ -961,7 +1037,7 @@ export default function DashboardPage() {
                   <button
                     key={status}
                     draggable
-                    onClick={() => handleStatusFilter(status as Lead['status'])}
+                    onClick={() => handleStatusFilter(status)}
                     onDragStart={(e) => handleDragStart(e, status)}
                     onDragOver={handleDragOver}
                     onDrop={(e) => handleDrop(e, status)}
@@ -971,7 +1047,7 @@ export default function DashboardPage() {
                   >
                     {status}
                     <span className={styles.badgeClasses}>
-                      {statusCounts[status as Lead['status']]}
+                      {statusCounts[status === 'WAO' ? 'WAO' : status as keyof typeof statusCounts]}
                     </span>
                   </button>
                 );
@@ -994,7 +1070,7 @@ export default function DashboardPage() {
                 onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
                 onFocus={() => searchTerm.length >= 2 && setShowSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                className="w-full sm:w-64 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-black placeholder-gray-500 text-sm"
+                className="w-full sm:w-64 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-black placeholder:text-black text-sm"
               />
               
               {/* Search Suggestions Dropdown */}
@@ -1108,7 +1184,7 @@ export default function DashboardPage() {
                   <option value="Busy">Busy</option>
                   <option value="Follow-up">Follow-up</option>
                   <option value="Deal Close">Deal Close</option>
-                  <option value="Work Alloted">Work Alloted</option>
+                  <option value="Work Alloted">WAO</option>
                   <option value="Hotlead">Hotlead</option>
                   <option value="Mandate Sent">Mandate Sent</option>
                   <option value="Documentation">Documentation</option>
@@ -1151,11 +1227,17 @@ export default function DashboardPage() {
                 </div>
               </div>
             ) : (
-              <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
-                <svg className="w-4 h-4 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
-                  <circle cx="10" cy="10" r="3" />
+              <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                <svg className="w-4 h-4 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                 </svg>
-                <span className="text-sm text-gray-600">No status selected</span>
+                <span className="text-sm text-green-800 font-medium">Showing all leads - click status buttons above to filter</span>
+                <button
+                  onClick={clearAllFilters}
+                  className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-xs font-medium"
+                >
+                  Clear Filters
+                </button>
               </div>
             )}
         </div>
@@ -1226,389 +1308,59 @@ export default function DashboardPage() {
       {/* Lead Table */}
       <div data-lead-table className="relative">
         <div className="sticky top-0 z-10 bg-white shadow-sm rounded-lg">
-          <LeadTable 
+          <EditableTable 
+            key={`table-${columnCount}-${Date.now()}`} // Force re-mount when columns change
             filters={activeFilters} 
             onLeadClick={handleLeadClick}
             selectedLeads={selectedLeads}
             onLeadSelection={handleLeadSelection}
             selectAll={selectAll}
             onSelectAll={handleSelectAll}
+            editable={true}
+            onCellUpdate={handleCellUpdate}
+            validationErrors={validationErrors}
+            onExportClick={handleExportExcel}
+            headerEditable={true}
+            onColumnAdded={(column) => {
+              // Handle column addition
+              console.log('Column added:', column);
+              showToastNotification(`Column "${column.label}" added successfully!`, 'success');
+            }}
+            onColumnDeleted={(fieldKey) => {
+              // Handle column deletion
+              console.log('Column deleted:', fieldKey);
+              showToastNotification('Column deleted successfully!', 'success');
+            }}
+            onColumnReorder={(newOrder) => {
+              // Handle column reordering
+              console.log('Columns reordered:', newOrder);
+            }}
+            onRowsAdded={(count) => {
+              // Handle row addition
+              console.log('Rows added:', count);
+            }}
+            onRowsDeleted={(count) => {
+              // Handle row deletion
+              console.log('Rows deleted:', count);
+            }}
           />
         </div>
       </div>
 
       {/* Lead Detail Modal */}
-      {showLeadModal && selectedLead && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-5 mx-auto p-2 border w-11/12 md:w-5/6 lg:w-4/5 xl:w-3/4 shadow-lg rounded-md bg-white">
-            <div className="mt-1">
-            {/* Modal Header */}
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="text-xs font-medium text-black">Lead Details</h3>
-              <button
-                onClick={() => {
-                  setShowLeadModal(false);
-                  // Restore body scrolling when modal is closed
-                  document.body.style.overflow = 'unset';
-                }}
-                  className="text-gray-400 hover:text-black transition-colors"
-                  title="Close modal"
-              >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-              </button>
-            </div>
-
-              {/* Modal Content */}
-              <div className="space-y-2">
-                {/* Main Information Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                  {/* Basic Info */}
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Client Name</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.clientName, 'clientName')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy client name"
-                      >
-                        {copiedField === 'clientName' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-xs font-medium text-black">{selectedLead.clientName}</p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Company</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.company, 'company')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy company name"
-                      >
-                        {copiedField === 'company' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-xs font-medium text-black">{selectedLead.company}</p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Consumer Number</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.consumerNumber || 'N/A', 'consumerNumber')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy consumer number"
-                      >
-                        {copiedField === 'consumerNumber' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-xs font-medium text-black">{selectedLead.consumerNumber || 'N/A'}</p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">KVA</label>
-                      <button
-                        onClick={() => copyToClipboard(selectedLead.kva, 'kva')}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy KVA"
-                      >
-                        {copiedField === 'kva' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-xs font-medium text-black">{selectedLead.kva}</p>
-                  </div>
-                  
-                  {/* Contact Info */}
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-medium text-black">Main Phone</label>
-                      <button
-                        onClick={() => {
-                          const phoneNumber = selectedLead.mobileNumbers && selectedLead.mobileNumbers.length > 0 
-                            ? selectedLead.mobileNumbers.find(m => m.isMain)?.number || selectedLead.mobileNumbers[0]?.number || 'N/A'
-                            : selectedLead.mobileNumber || 'N/A';
-                          copyToClipboard(phoneNumber, 'mainPhone');
-                        }}
-                        className="text-gray-400 hover:text-black transition-colors"
-                        title="Copy main phone number"
-                      >
-                        {copiedField === 'mainPhone' ? (
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                  </div>
-                    <p className="text-xs font-medium text-black">
-                      {(() => {
-                        const phoneNumber = selectedLead.mobileNumbers && selectedLead.mobileNumbers.length > 0 
-                          ? selectedLead.mobileNumbers.find(m => m.isMain)?.number || selectedLead.mobileNumbers[0]?.number || 'N/A'
-                          : selectedLead.mobileNumber || 'N/A';
-                        return phoneNumber;
-                      })()}
-                    </p>
-                </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Status</label>
-                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                          selectedLead.status === 'New' ? 'bg-blue-100 text-blue-800' :
-                          selectedLead.status === 'CNR' ? 'bg-orange-100 text-orange-800' :
-                          selectedLead.status === 'Busy' ? 'bg-yellow-100 text-yellow-800' :
-                          selectedLead.status === 'Follow-up' ? 'bg-purple-100 text-purple-800' :
-                          selectedLead.status === 'Deal Close' ? 'bg-green-100 text-green-800' :
-                          selectedLead.status === 'Work Alloted' ? 'bg-indigo-100 text-indigo-800' :
-                          selectedLead.status === 'Hotlead' ? 'bg-red-100 text-red-800' :
-                          selectedLead.status === 'Others' ? 'bg-gray-100 text-black' :
-                          'bg-gray-100 text-black'
-                        }`}>
-                          {selectedLead.status}
-                        </span>
-                      </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Unit Type</label>
-                    <p className="text-xs font-medium text-black">{selectedLead.unitType}</p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Discom</label>
-                    <p className="text-xs font-medium text-black">{selectedLead.discom || 'N/A'}</p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">GIDC</label>
-                    <p className="text-xs font-medium text-black">{selectedLead.gidc || 'N/A'}</p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">GST Number</label>
-                    <p className="text-xs font-medium text-black">{selectedLead.gstNumber || 'N/A'}</p>
-                  </div>
-                  
-                  {/* Dates */}
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Connection Date</label>
-                    <p className="text-xs font-medium text-black">{formatDateToDDMMYYYY(selectedLead.connectionDate)}</p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Follow-up Date</label>
-                    <p className="text-xs font-medium text-black">
-                      {selectedLead.followUpDate ? formatDateToDDMMYYYY(selectedLead.followUpDate) : 'N/A'}
-                    </p>
-                  </div>
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Last Activity</label>
-                    <p className="text-xs font-medium text-black">{formatDateToDDMMYYYY(selectedLead.lastActivityDate)}</p>
-                  </div>
-                  
-
-                  </div>
-
-                {/* Additional Numbers */}
-                {selectedLead.mobileNumbers && selectedLead.mobileNumbers.length > 0 && (
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">All Mobile Numbers</label>
-                    <div className="space-y-1">
-                      {selectedLead.mobileNumbers.filter(m => m.number && m.number.trim()).map((mobile, index) => (
-                        <div key={index} className="flex items-center justify-between bg-white px-2 py-1 rounded border">
-                          <div className="flex-1">
-                            <div className="text-xs font-medium text-black">
-                              {mobile.name ? `${mobile.name}` : `Mobile ${index + 1}`}
-                            </div>
-                            <div className="text-xs text-black">{mobile.number}</div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {mobile.isMain && (
-                              <span className="px-2 py-1 text-xs font-bold bg-blue-100 text-blue-800 rounded-full">
-                                Main
-                              </span>
-                            )}
-                            <button
-                              onClick={() => copyToClipboard(mobile.number, `mobile${index + 1}`)}
-                              className="text-gray-400 hover:text-black transition-colors"
-                              title="Copy mobile number"
-                            >
-                              {copiedField === `mobile${index + 1}` ? (
-                                <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                </svg>
-                              ) : (
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                </svg>
-                              )}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Notes and Additional Info */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {selectedLead.companyLocation && (
-                    <div className="bg-gray-50 p-2 rounded-md">
-                      <label className="block text-xs font-medium text-black mb-1">Company Location</label>
-                      <p className="text-xs font-medium text-black">{selectedLead.companyLocation}</p>
-                    </div>
-                  )}
-                  {selectedLead.notes && (
-                    <div className="bg-gray-50 p-2 rounded-md">
-                      <label className="block text-xs font-medium text-black mb-1">Last Discussion</label>
-                      <p className="text-xs font-medium text-black line-clamp-3">{selectedLead.notes}</p>
-                    </div>
-                  )}
-                  {selectedLead.finalConclusion && (
-                    <div className="bg-gray-50 p-2 rounded-md">
-                      <label className="block text-xs font-medium text-black mb-1">Final Conclusion</label>
-                      <p className="text-xs font-medium text-black line-clamp-3">{selectedLead.finalConclusion}</p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Recent Activities - Compact */}
-                {selectedLead.activities && selectedLead.activities.filter(activity => activity.description !== 'Lead created').length > 0 && (
-                  <div className="bg-gray-50 p-2 rounded-md">
-                    <label className="block text-xs font-medium text-black mb-1">Recent Activities</label>
-                    <div className="space-y-1 max-h-24 overflow-y-auto">
-                      {selectedLead.activities.filter(activity => activity.description !== 'Lead created').slice(-3).map((activity) => (
-                        <div key={activity.id} className="bg-white p-1 rounded text-xs">
-                          <p className="text-black font-medium">{activity.description}</p>
-                          <p className="text-black">
-                            {new Date(activity.timestamp).toLocaleDateString()}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-            </div>
-            
-              {/* Modal Footer */}
-              <div className="flex justify-between items-center mt-3 pt-2 border-t">
-                <div className="flex space-x-2">
-                  <button 
-                    onClick={() => {
-                        const allInfo = `Client: ${selectedLead.clientName}
-Company: ${selectedLead.company}
-Consumer Number: ${selectedLead.consumerNumber || 'N/A'}
-KVA: ${selectedLead.kva}
-Discom: ${selectedLead.discom || 'N/A'}
-GIDC: ${selectedLead.gidc || 'N/A'}
-GST Number: ${selectedLead.gstNumber || 'N/A'}
-Phone: ${(() => {
-  const phoneNumber = selectedLead.mobileNumbers && selectedLead.mobileNumbers.length > 0 
-    ? selectedLead.mobileNumbers.find(m => m.isMain)?.number || selectedLead.mobileNumbers[0]?.number || 'N/A'
-    : selectedLead.mobileNumber || 'N/A';
-  const contactName = selectedLead.mobileNumbers && selectedLead.mobileNumbers.length > 0 
-    ? selectedLead.mobileNumbers.find(m => m.isMain)?.name || selectedLead.clientName || 'N/A'
-    : selectedLead.clientName || 'N/A';
-  return `${phoneNumber} - ${contactName}`;
-})()}
-Status: ${selectedLead.status}
-Unit Type: ${selectedLead.unitType}
-Connection Date: ${formatDateToDDMMYYYY(selectedLead.connectionDate)}
-Follow-up Date: ${selectedLead.followUpDate ? formatDateToDDMMYYYY(selectedLead.followUpDate) : 'N/A'}
-Last Activity: ${formatDateToDDMMYYYY(selectedLead.lastActivityDate)}
-${selectedLead.companyLocation ? `Location: ${selectedLead.companyLocation}` : ''}
-${selectedLead.notes ? `Last Discussion: ${selectedLead.notes}` : ''}
-${selectedLead.finalConclusion ? `Conclusion: ${selectedLead.finalConclusion}` : ''}`;
-                        copyToClipboard(allInfo, 'allInfo');
-                      }}
-                      className="px-3 py-1 text-xs font-medium text-black bg-gray-100 border border-gray-300 rounded hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors flex items-center space-x-1"
-                    >
-                      {copiedField === 'allInfo' ? (
-                        <>
-                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                          <span>Copied!</span>
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                          <span>Copy All Info</span>
-                        </>
-                      )}
-                  </button>
-                  
-                  <button 
-                    onClick={() => handleWhatsAppRedirect(selectedLead)}
-                    className="px-3 py-1 text-xs font-medium text-white bg-green-600 border border-transparent rounded hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors flex items-center space-x-1"
-                  >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893A11.821 11.821 0 0020.885 3.488"/>
-                    </svg>
-                    <span>WhatsApp</span>
-                  </button>
-                </div>
-                <div className="flex space-x-2">
-              <button 
-                onClick={() => {
-                  setShowLeadModal(false);
-                  // Restore body scrolling when modal is closed
-                  document.body.style.overflow = 'unset';
-                }}
-                    className="px-3 py-1 text-xs font-medium text-black bg-gray-100 border border-gray-300 rounded hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors"
-              >
-                Close
-              </button>
-              <button 
-                onClick={() => handleEditLead(selectedLead)}
-                    className="px-3 py-1 text-xs font-medium text-white bg-blue-600 border border-transparent rounded hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
-              >
-                Edit Lead
-              </button>
-              <button
-                onClick={() => {
-                  setLeadToDelete(selectedLead);
-                  setShowDeleteModal(true);
-                }}
-                    className="px-3 py-1 text-xs font-medium text-white bg-red-600 border border-transparent rounded hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
-              >
-                Delete Lead
-              </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <LeadDetailModal
+        isOpen={showLeadModal}
+        onClose={() => {
+          setShowLeadModal(false);
+          document.body.style.overflow = 'unset';
+        }}
+        lead={selectedLead!}
+        onEdit={handleEditLead}
+        onDelete={(lead) => {
+          setLeadToDelete(lead);
+          setShowDeleteModal(true);
+        }}
+      />
 
       {/* Ultra Sleek Premium Delete Modal */}
       {showDeleteModal && leadToDelete && (
@@ -1786,89 +1538,25 @@ ${selectedLead.finalConclusion ? `Conclusion: ${selectedLead.finalConclusion}` :
       )}
 
       {/* Export Password Modal */}
-      {showExportPasswordModal && (
-        <div className="fixed inset-0 bg-gradient-to-br from-slate-900/95 via-gray-900/90 to-black/95 backdrop-blur-xl flex items-center justify-center z-[60] p-4">
-          <div className="bg-white/95 backdrop-blur-sm rounded-3xl shadow-2xl w-full max-w-md transform transition-all duration-700 ease-out border border-white/20">
-            {/* Modal Header */}
-            <div className="flex justify-center items-center p-6 bg-gradient-to-br from-slate-50 via-white to-gray-50 rounded-t-3xl">
-              <div className="relative">
-                <div className="w-16 h-16 bg-gradient-to-br from-blue-500 via-indigo-500 to-blue-600 rounded-2xl flex items-center justify-center shadow-xl transform rotate-3 hover:rotate-0 transition-transform duration-500">
-                  <div className="w-12 h-12 bg-gradient-to-br from-blue-400 to-indigo-500 rounded-xl flex items-center justify-center shadow-inner">
-                    <svg className="w-7 h-7 text-white drop-shadow-sm" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                    </svg>
-                  </div>
-                </div>
-                <div className="absolute -top-2 -right-2 w-6 h-6 bg-gradient-to-br from-green-400 to-emerald-500 rounded-full flex items-center justify-center shadow-lg animate-pulse">
-                  <span className="text-white text-xs font-bold">!</span>
-                </div>
-              </div>
-            </div>
-            
-            {/* Modal Content */}
-            <div className="p-6 text-center bg-gradient-to-br from-white via-slate-50/50 to-gray-50/30">
-              <h3 className="text-2xl font-bold mb-4 bg-gradient-to-r from-slate-800 via-gray-700 to-slate-800 bg-clip-text text-transparent">
-                Export Leads
-              </h3>
-              <p className="text-slate-600 mb-6 text-base font-medium">
-                Please enter the password to export leads data
-              </p>
-              
-              {/* Password Input */}
-              <div className="mb-6">
-                <input
-                  type="password"
-                  value={exportPassword}
-                  onChange={(e) => setExportPassword(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && performExport()}
-                  placeholder="Enter password"
-                  className="w-full px-4 py-3 border-2 border-slate-200 rounded-2xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all duration-300 text-center font-medium text-lg text-black placeholder-black"
-                  autoFocus
-                />
-              </div>
-              
-              {/* Warning Notice */}
-              <div className="bg-gradient-to-r from-red-50 to-orange-50 border border-red-200/50 rounded-2xl p-4 mb-4 shadow-sm">
-                <div className="flex items-center justify-center space-x-3 text-red-700 text-sm font-bold">
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  <span>⚠️ STAY AWAY, IF YOU'RE NOT ADMIN ⚠️</span>
-                </div>
-              </div>
-              
-              {/* Security Notice */}
-              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/50 rounded-2xl p-4 mb-6 shadow-sm">
-                <div className="flex items-center justify-center space-x-3 text-blue-700 text-sm font-semibold">
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
-                  </svg>
-                  <span>This action requires authorization to protect sensitive data.</span>
-                </div>
-              </div>
-            </div>
-            
-            {/* Action Buttons */}
-            <div className="flex justify-center space-x-4 p-6 bg-gradient-to-br from-slate-50 via-white to-gray-50 rounded-b-3xl">
-              <button
-                onClick={() => {
-                  setShowExportPasswordModal(false);
-                  setExportPassword('');
-                }}
-                className="px-6 py-3 text-sm font-bold text-slate-700 bg-white/80 backdrop-blur-sm border-2 border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded-2xl transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={performExport}
-                className="px-6 py-3 text-sm font-bold bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-600 text-white hover:from-blue-600 hover:via-indigo-600 hover:to-blue-700 rounded-2xl transition-all duration-300 shadow-xl hover:shadow-2xl transform hover:-translate-y-0.5"
-              >
-                Export Leads
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <PasswordModal
+        isOpen={showExportPasswordModal}
+        onClose={() => {
+        setShowExportPasswordModal(false);
+        }}
+        operation="export"
+        onSuccess={handleExportPasswordSuccess}
+        title="Export Leads"
+        description="Enter password to export leads data"
+      />
+
+      {/* Password Settings Modal */}
+      <PasswordSettingsModal
+        isOpen={passwordSettingsOpen}
+        onClose={() => setPasswordSettingsOpen(false)}
+        onPasswordChanged={() => {
+          // Refresh any cached verification status
+        }}
+      />
 
       {/* Toast Notification */}
       {showToast && (

@@ -1,6 +1,16 @@
 ﻿'use client';
 
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { parseDateFromDDMMYYYY } from '../hooks/useValidation';
+
+// Helper function to format today's date as DD-MM-YYYY
+const todayDDMMYYYY = () => {
+  const d = new Date();
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}-${month}-${year}`;
+};
 
 export interface MobileNumber {
   id: string;
@@ -22,7 +32,7 @@ export interface Lead {
   mobileNumbers: MobileNumber[]; // Updated to support multiple mobile numbers
   mobileNumber: string; // Keep for backward compatibility
   companyLocation?: string; // New field for company location
-  unitType: 'New' | 'Existing' | 'Other'; // Renamed from status for unit type
+  unitType: 'New' | 'Existing' | 'Other' | string; // Allow custom unit types
   marketingObjective?: string;
   budget?: string;
   timeline?: string;
@@ -50,9 +60,10 @@ export interface Activity {
 interface LeadContextType {
   leads: Lead[];
   setLeads: React.Dispatch<React.SetStateAction<Lead[]>>;
-  addLead: (lead: Lead) => void;
-  updateLead: (updatedLead: Lead) => void;
+  addLead: (lead: Lead, columnConfigs?: any[]) => void;
+  updateLead: (updatedLead: Lead, opts?: { touchActivity?: boolean }) => void;
   deleteLead: (id: string) => void;
+  permanentlyDeleteLead: (id: string) => void;
   markAsDone: (id: string) => void;
   addActivity: (leadId: string, description: string) => void;
   getFilteredLeads: (filters: LeadFilters) => Lead[];
@@ -60,6 +71,11 @@ interface LeadContextType {
   savedViews: SavedView[];
   addSavedView: (view: SavedView) => void;
   deleteSavedView: (id: string) => void;
+  migrateLeadsForNewColumn: (columnConfig: any) => void;
+  removeColumnFromLeads: (fieldKey: string) => void;
+  getLeadFieldValue: (lead: Lead, fieldKey: string, defaultValue?: any, columnConfig?: any) => any;
+  getLeadWithDefaults: (lead: Lead, columnConfigs: any[]) => Lead;
+  validateLeadAgainstColumns: (lead: Lead, columnConfigs: any[]) => string[];
 }
 
 export interface LeadFilters {
@@ -83,12 +99,34 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
 
+  // Helper function to parse dates from various formats
+  const toDate = (v?: string) => {
+    if (!v) return null;
+    // Try DD-MM-YYYY first
+    const ddmmyyyy = parseDateFromDDMMYYYY(v);
+    if (ddmmyyyy && !isNaN(ddmmyyyy.getTime())) return ddmmyyyy;
+    // Fallback to native Date (ISO etc.)
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
   // Load leads from localStorage
   useEffect(() => {
     try {
       const stored = localStorage.getItem('leads');
       if (stored) {
-        setLeads(JSON.parse(stored));
+        const parsedLeads = JSON.parse(stored);
+        console.log('🔍 Loading leads from localStorage:', parsedLeads.length, 'leads');
+        console.log('📊 Lead details:', parsedLeads.map(l => ({ 
+          id: l.id, 
+          kva: l.kva, 
+          status: l.status, 
+          isDeleted: l.isDeleted, 
+          isDone: l.isDone 
+        })));
+        setLeads(parsedLeads);
+      } else {
+        console.log('🔍 No leads found in localStorage');
       }
       
       const storedViews = localStorage.getItem('savedViews');
@@ -107,8 +145,12 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     if (!isHydrated) return;
     
     const timeoutId = setTimeout(() => {
-      localStorage.setItem('leads', JSON.stringify(leads));
-    }, 300); // Debounce by 300ms
+      try {
+        localStorage.setItem('leads', JSON.stringify(leads));
+      } catch (error) {
+        console.error('Error saving leads to localStorage:', error);
+      }
+    }, 500); // Increased debounce for better performance
     
     return () => clearTimeout(timeoutId);
   }, [leads, isHydrated]);
@@ -118,27 +160,49 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     if (!isHydrated) return;
     
     const timeoutId = setTimeout(() => {
-      localStorage.setItem('savedViews', JSON.stringify(savedViews));
-    }, 300); // Debounce by 300ms
+      try {
+        localStorage.setItem('savedViews', JSON.stringify(savedViews));
+      } catch (error) {
+        console.error('Error saving views to localStorage:', error);
+      }
+    }, 500); // Increased debounce for better performance
     
     return () => clearTimeout(timeoutId);
   }, [savedViews, isHydrated]);
 
-  const addLead = (lead: Lead) => {
-    console.log('Adding lead:', lead);
+  const addLead = (lead: Lead, columnConfigs?: any[]) => {
+    console.log('🔍 Adding lead:', lead);
+    console.log('📊 Lead status:', lead.status);
+    console.log('📊 Lead isDeleted:', lead.isDeleted);
+    console.log('📊 Lead isDone:', lead.isDone);
+    console.log('📊 Column configs provided:', columnConfigs?.length || 0);
+    
+    // Apply defaults for all current columns if columnConfigs provided
+    const leadWithDefaults = columnConfigs ? getLeadWithDefaults(lead, columnConfigs) : lead;
+    
+    // Ensure the lead has all required flags set correctly
+    const finalLead = {
+      ...leadWithDefaults,
+      isUpdated: false,
+      isDeleted: lead.isDeleted || false,
+      isDone: lead.isDone || false
+    };
+    
     setLeads(prev => {
-      const newLeads = [...prev, { ...lead, isUpdated: false }];
-      console.log('Updated leads:', newLeads);
+      const newLeads = [...prev, finalLead];
+      console.log('✅ Updated leads count:', newLeads.length);
+      console.log('📊 All leads statuses:', newLeads.map(l => ({ id: l.id, status: l.status, isDeleted: l.isDeleted, isDone: l.isDone })));
       return newLeads;
     });
   };
   
-  const updateLead = (updatedLead: Lead) => {
+  const updateLead = (updatedLead: Lead, opts?: { touchActivity?: boolean }) => {
+    const touchActivity = opts?.touchActivity !== false; // Default to true if not specified
     setLeads(prev => 
       prev.map(lead => lead.id === updatedLead.id ? { 
         ...updatedLead, 
         isUpdated: true,
-        lastActivityDate: new Date().toISOString()
+        lastActivityDate: touchActivity ? new Date().toISOString() : lead.lastActivityDate
       } : lead)
     );
   };
@@ -152,6 +216,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       );
       return updated;
     });
+  };
+
+  const permanentlyDeleteLead = (id: string) => {
+    setLeads(prev => prev.filter(lead => lead.id !== id));
   };
 
   const markAsDone = (id: string) => {
@@ -187,45 +255,55 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
   };
   
-  const getFilteredLeads = (filters: LeadFilters): Lead[] => {
-    console.log('=== FILTERED LEADS DEBUG ===');
-    console.log('Filters:', filters);
-    console.log('Total leads:', leads.length);
+  const getFilteredLeads = useCallback((filters: LeadFilters): Lead[] => {
+    console.log('🔍 getFilteredLeads called with filters:', filters);
+    console.log('📊 Total leads before filtering:', leads.length);
+    console.log('📊 All leads details:', leads.map(l => ({ 
+      id: l.id, 
+      kva: l.kva, 
+      status: l.status, 
+      isDeleted: l.isDeleted, 
+      isDone: l.isDone,
+      clientName: l.clientName 
+    })));
     
-    return leads.filter(lead => {
-      console.log(`Checking lead ${lead.kva}: status="${lead.status}", isDeleted=${lead.isDeleted}, isDone=${lead.isDone}, isUpdated=${lead.isUpdated}`);
-      
+    const filtered = leads.filter(lead => {
       // Filter out deleted leads (isDeleted: true) - they should not appear in dashboard
       if (lead.isDeleted) {
-        console.log(`Lead ${lead.kva} filtered out: isDeleted=true`);
+        console.log('❌ Lead filtered out (deleted):', lead.clientName || lead.kva);
         return false;
       }
       
       // Filter out completed leads (isDone: true)
       if (lead.isDone) {
-        console.log(`Lead ${lead.kva} filtered out: isDone=true`);
+        console.log('❌ Lead filtered out (done):', lead.clientName || lead.kva);
         return false;
       }
       
-      // For main dashboard (no status filter), show NO leads at all
-      // User must select a status to see any leads
-      if (!filters.status || filters.status.length === 0) {
-        console.log(`Lead ${lead.kva} filtered out: no status selected (main dashboard)`);
-        return false; // Hide ALL leads when no status is selected
-      }
-      
-      // Filter by status
+      // For main dashboard (no status filter), show all non-deleted, non-done leads
+      // Only filter by status if explicitly provided
       if (filters.status && filters.status.length > 0 && !filters.status.includes(lead.status)) {
-        console.log(`Lead ${lead.kva} filtered out: status "${lead.status}" not in filter ${filters.status}`);
+        console.log('❌ Lead filtered out (status):', lead.clientName || lead.kva, 'status:', lead.status, 'filter:', filters.status);
         return false;
       }
       
-      // Filter by follow-up date range
-      if (filters.followUpDateStart && lead.followUpDate < filters.followUpDateStart) {
+      // Filter by follow-up date range - parse dates as Date objects for accurate comparison
+      const leadDate = toDate(lead.followUpDate);
+      const startDate = toDate(filters.followUpDateStart);
+      const endDate = toDate(filters.followUpDateEnd);
+      
+      if (startDate && leadDate && leadDate < startDate) {
+        console.log('❌ Lead filtered out (follow-up date start):', lead.clientName || lead.kva);
         return false;
       }
-      if (filters.followUpDateEnd && lead.followUpDate > filters.followUpDateEnd) {
+      if (endDate && leadDate && leadDate > endDate) {
+        console.log('❌ Lead filtered out (follow-up date end):', lead.clientName || lead.kva);
         return false;
+      }
+      
+      // Debug log for invalid dates
+      if (lead.followUpDate && !leadDate) {
+        console.warn('Invalid followUpDate', lead.id, lead.followUpDate);
       }
       
       // Filter by discom - robust comparison
@@ -233,18 +311,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         const leadDiscom = String(lead.discom || '').trim().toUpperCase();
         const filterDiscom = String(filters.discom).trim().toUpperCase();
         
-        console.log(`=== DISCOM FILTER DEBUG ===`);
-        console.log(`Lead ${lead.kva} discom: "${lead.discom}" -> normalized: "${leadDiscom}"`);
-        console.log(`Filter discom: "${filters.discom}" -> normalized: "${filterDiscom}"`);
-        console.log(`Match: ${leadDiscom === filterDiscom}`);
-        
         if (leadDiscom !== filterDiscom) {
-          console.log(`Lead ${lead.kva} filtered out: discom "${leadDiscom}" doesn't match filter "${filterDiscom}"`);
-          console.log(`=== END DISCOM FILTER DEBUG ===`);
+          console.log('❌ Lead filtered out (discom):', lead.clientName || lead.kva, 'lead discom:', leadDiscom, 'filter:', filterDiscom);
           return false;
         }
-        console.log(`Lead ${lead.kva} passed discom filter`);
-        console.log(`=== END DISCOM FILTER DEBUG ===`);
       }
       
       // Search term (search in name, company, email, notes, etc.)
@@ -263,6 +333,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
             if (mobileNumber) {
               const phoneDigits = mobileNumber.replace(/[^0-9]/g, '');
               if (phoneDigits.includes(filters.searchTerm)) {
+                console.log('✅ Lead matches phone search:', lead.clientName || lead.kva);
                 return true;
               }
             }
@@ -290,12 +361,20 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           lead.finalConclusion
         ].filter(Boolean).map(field => field?.toLowerCase());
         
-        return searchableFields.some(field => field?.includes(searchTerm));
+        const matches = searchableFields.some(field => field?.includes(searchTerm));
+        if (!matches) {
+          console.log('❌ Lead filtered out (search term):', lead.clientName || lead.kva);
+        }
+        return matches;
       }
       
+      console.log('✅ Lead passes all filters:', lead.clientName || lead.kva);
       return true;
     });
-  };
+    
+    console.log('📊 Final filtered leads count:', filtered.length);
+    return filtered;
+  }, [leads]);
 
   const resetUpdatedLeads = () => {
     setLeads(prev => 
@@ -311,6 +390,183 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     setSavedViews(prev => prev.filter(view => view.id !== id));
   };
 
+  // Column integration methods - enhanced to handle different column types
+  const migrateLeadsForNewColumn = (columnConfig: any) => {
+    console.log(`🔄 Starting migration for new column: ${columnConfig.fieldKey}`);
+    console.log(`📊 Total leads to migrate: ${leads.length}`);
+    
+    setLeads(prev => {
+      const migrated = prev.map(lead => {
+        // Check if lead already has this field
+        if ((lead as any)[columnConfig.fieldKey] !== undefined) {
+          console.log(`⚠️ Lead ${lead.clientName || lead.kva} already has field ${columnConfig.fieldKey}, skipping`);
+          return lead;
+        }
+        
+        let defaultValue = columnConfig.defaultValue;
+        
+        // Set appropriate default value based on column type
+        if (defaultValue === undefined) {
+          switch (columnConfig.type) {
+            case 'date':
+              defaultValue = todayDDMMYYYY();
+              break;
+            case 'number':
+              defaultValue = 0;
+              break;
+            case 'phone':
+            case 'email':
+            case 'text':
+              defaultValue = '';
+              break;
+            case 'select':
+              defaultValue = columnConfig.options?.[0] || '';
+              break;
+            default:
+              defaultValue = '';
+          }
+        }
+        
+        // Preserve existing flags and properties
+        const updatedLead = {
+          ...lead,
+          [columnConfig.fieldKey]: defaultValue,
+          // Explicitly preserve these flags to prevent accidental modification
+          isDeleted: lead.isDeleted || false,
+          isDone: lead.isDone || false,
+          isUpdated: lead.isUpdated || false
+        };
+        
+        console.log(`✅ Migrated lead ${lead.clientName || lead.kva} with field ${columnConfig.fieldKey} = ${defaultValue}`);
+        return updatedLead;
+      });
+      
+      console.log(`🎉 Migration complete for column: ${columnConfig.fieldKey}`);
+      return migrated;
+    });
+  };
+
+  const removeColumnFromLeads = (fieldKey: string) => {
+    setLeads(prev => prev.map(lead => {
+      const { [fieldKey]: removedField, ...rest } = lead as any;
+      return rest;
+    }));
+    console.log(`Removed column "${fieldKey}" from ${leads.length} leads`);
+  };
+
+  const getLeadFieldValue = (lead: Lead, fieldKey: string, defaultValue?: any, columnConfig?: any): any => {
+    const value = (lead as any)[fieldKey];
+    
+    if (value !== undefined && value !== null) {
+      // Handle type conversion based on column configuration
+      if (columnConfig) {
+        switch (columnConfig.type) {
+          case 'date':
+            // Ensure date is in DD-MM-YYYY format
+            if (typeof value === 'string' && value.match(/^\d{2}-\d{2}-\d{4}$/)) {
+              return value;
+            }
+            // Convert other date formats to DD-MM-YYYY
+            try {
+              const date = new Date(value);
+              if (!isNaN(date.getTime())) {
+                const day = String(date.getDate()).padStart(2, '0');
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const year = date.getFullYear();
+                return `${day}-${month}-${year}`;
+              }
+            } catch {
+              return value;
+            }
+            break;
+          case 'number':
+            return Number(value) || 0;
+          case 'phone':
+            // Clean phone number
+            return String(value).replace(/[^0-9]/g, '');
+          case 'email':
+            return String(value).toLowerCase().trim();
+          case 'select':
+            return String(value);
+          case 'text':
+          default:
+            return String(value);
+        }
+      }
+      return value;
+    }
+    
+    // Return appropriate default value based on column type
+    if (columnConfig) {
+      switch (columnConfig.type) {
+        case 'date':
+          return defaultValue || todayDDMMYYYY();
+        case 'number':
+          return defaultValue || 0;
+        case 'phone':
+        case 'email':
+        case 'text':
+        case 'select':
+          return defaultValue || '';
+        default:
+          return defaultValue || '';
+      }
+    }
+    
+    return defaultValue || '';
+  };
+
+  // Additional helper functions for dynamic columns
+  const getLeadWithDefaults = (lead: Lead, columnConfigs: any[]): Lead => {
+    const leadWithDefaults = { ...lead };
+    
+    columnConfigs.forEach(column => {
+      if (leadWithDefaults[column.fieldKey as keyof Lead] === undefined) {
+        let defaultValue = column.defaultValue;
+        
+        if (defaultValue === undefined) {
+          switch (column.type) {
+            case 'date':
+              defaultValue = todayDDMMYYYY();
+              break;
+            case 'number':
+              defaultValue = 0;
+              break;
+            case 'phone':
+            case 'email':
+            case 'text':
+              defaultValue = '';
+              break;
+            case 'select':
+              defaultValue = column.options?.[0] || '';
+              break;
+            default:
+              defaultValue = '';
+          }
+        }
+        
+        (leadWithDefaults as any)[column.fieldKey] = defaultValue;
+      }
+    });
+    
+    return leadWithDefaults;
+  };
+
+  const validateLeadAgainstColumns = (lead: Lead, columnConfigs: any[]): string[] => {
+    const errors: string[] = [];
+    
+    columnConfigs.forEach(column => {
+      if (column.required) {
+        const value = (lead as any)[column.fieldKey];
+        if (!value || (typeof value === 'string' && !value.trim())) {
+          errors.push(`${column.label} is required`);
+        }
+      }
+    });
+    
+    return errors;
+  };
+
   return (
     <LeadContext.Provider value={{
       leads,
@@ -318,13 +574,19 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       addLead,
       updateLead,
       deleteLead,
+      permanentlyDeleteLead,
       markAsDone,
       addActivity,
       getFilteredLeads,
       resetUpdatedLeads,
       savedViews,
       addSavedView,
-      deleteSavedView
+      deleteSavedView,
+      migrateLeadsForNewColumn,
+      removeColumnFromLeads,
+      getLeadFieldValue,
+      getLeadWithDefaults,
+      validateLeadAgainstColumns
     }}>
       {!isHydrated ? (
         <div className="flex items-center justify-center min-h-screen">
