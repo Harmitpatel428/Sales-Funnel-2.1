@@ -2,20 +2,17 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Edit3 } from 'lucide-react';
 import BenefitsModal from './BenefitsModal';
 import DOMPurify from 'dompurify';
+import { useTemplates, Template } from './TemplateManager';
 
 interface QuickBenefitModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave?: (payload: { selectedCategory: CategoryType; content: TemplateSections; resolvedBenefit: {district: string; taluka: string; category: 'I'|'II'|'III'} | null }) => void;
+  onSave?: (payload: { selectedTemplateId: string; templateName: string; content: TemplateSections; resolvedBenefit: {district: string; taluka: string; category: 'I'|'II'|'III'} | null }) => void;
 }
-
-type CategoryType = 'general' | 'category1' | 'category2' | 'category3';
 
 type TemplateSections = {
   overview: string;
 };
-
-type CategoryContent = Record<CategoryType, TemplateSections>;
 
 // ContentEditable Editor Component
 interface ContentEditableEditorProps {
@@ -79,102 +76,90 @@ const ContentEditableEditor: React.FC<ContentEditableEditorProps> = ({ content, 
 };
 
 const QuickBenefitModal: React.FC<QuickBenefitModalProps> = ({ isOpen, onClose, onSave }) => {
-  const [selectedCategory, setSelectedCategory] = useState<CategoryType>('general');
+  const { templates, activeTemplateId, setActiveTemplateId, createTemplate, deleteTemplate, renameTemplate, updateTemplateContent, getTemplateById } = useTemplates();
   const [showBenefitsModal, setShowBenefitsModal] = useState(false);
   const [resolvedBenefit, setResolvedBenefit] = useState<{district: string; taluka: string; category: 'I'|'II'|'III'} | null>(null);
   const [showContentEditor, setShowContentEditor] = useState(false);
-  const [contentByCategory, setContentByCategory] = useState<CategoryContent>({
-    general: { overview: '' },
-    category1: { overview: '' },
-    category2: { overview: '' },
-    category3: { overview: '' }
-  });
   const [editingContent, setEditingContent] = useState<TemplateSections>({
     overview: ''
   });
+  const [showTemplateManager, setShowTemplateManager] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState('');
+  const [renamingTemplateId, setRenamingTemplateId] = useState<string | null>(null);
 
-  // Load saved content from localStorage on component mount and when category changes
+  // ESC key handler to close only QuickBenefitModal
   useEffect(() => {
-    if (isOpen) {
-      handleContentLoad();
-    }
-  }, [isOpen]);
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
 
+  // ESC key handler for Content Editor Modal
   useEffect(() => {
-    if (isOpen) {
-      loadCategoryContent(selectedCategory);
-    }
-  }, [selectedCategory, isOpen]);
-
-  // Content management functions
-  const handleContentLoad = () => {
-    if (typeof window === 'undefined') return;
-    
-    const categories: CategoryType[] = ['general', 'category1', 'category2', 'category3'];
-    const loadedContent: Partial<CategoryContent> = {};
-    
-    categories.forEach(category => {
-      try {
-        const saved = localStorage.getItem(`quickBenefitTemplate_${category}`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          loadedContent[category] = parsed;
-        }
-      } catch (error) {
-        console.warn(`Error loading content for ${category}:`, error);
-        // Reset to defaults for this category on error
-        loadedContent[category] = { overview: '' };
+    if (!showContentEditor) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setShowContentEditor(false);
       }
-    });
-    
-    setContentByCategory(prev => ({ ...prev, ...loadedContent }));
-  };
-
-  const loadCategoryContent = (category: CategoryType) => {
-    if (typeof window === 'undefined') return;
-    
-    try {
-      const saved = localStorage.getItem(`quickBenefitTemplate_${category}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        setContentByCategory(prev => ({ ...prev, [category]: parsed }));
-      }
-    } catch (error) {
-      console.warn(`Error loading content for ${category}:`, error);
-    }
-  };
-
-  const handleContentSave = (category: CategoryType, content: TemplateSections) => {
-    if (typeof window === 'undefined') return;
-    
-    try {
-      // Sanitize content before saving
-      const sanitized = { overview: DOMPurify.sanitize(content.overview) };
-      
-      // Update the category content
-      setContentByCategory(prev => ({ ...prev, [category]: sanitized }));
-      
-      // Save to localStorage
-      localStorage.setItem(`quickBenefitTemplate_${category}`, JSON.stringify(sanitized));
-      
-      // Close the editor
-      setShowContentEditor(false);
-    } catch (error) {
-      console.error('Error saving content:', error);
-      alert('Failed to save content. Please try again.');
-    }
-  };
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [showContentEditor]);
 
   const handleEditContent = () => {
-    const currentContent = contentByCategory[selectedCategory];
-    setEditingContent(currentContent);
+    const currentTemplate = getTemplateById(activeTemplateId || '');
+    setEditingContent(currentTemplate?.content || { overview: '' });
     setShowContentEditor(true);
+  };
+
+  const handleCreateTemplate = () => {
+    if (!newTemplateName.trim()) return;
+    const templateId = createTemplate(newTemplateName);
+    if (templateId) {
+      setActiveTemplateId(templateId);
+      setNewTemplateName('');
+      setShowTemplateManager(false);
+    }
+  };
+
+  const handleDeleteTemplate = async () => {
+    if (!activeTemplateId) return;
+    await deleteTemplate(activeTemplateId);
+  };
+
+  const handleRenameTemplate = () => {
+    if (!renamingTemplateId || !newTemplateName.trim()) return;
+    const success = renameTemplate(renamingTemplateId, newTemplateName);
+    if (success) {
+      setRenamingTemplateId(null);
+      setNewTemplateName('');
+    }
+  };
+
+  const handleSaveTemplateContent = () => {
+    if (!activeTemplateId) return;
+    const sanitizedContent = { overview: DOMPurify.sanitize(editingContent.overview) };
+    updateTemplateContent(activeTemplateId, sanitizedContent);
+    setShowContentEditor(false);
   };
 
   if (!isOpen) return null;
 
+  // Cache active template instance to reduce repeated lookups
+  const activeTemplate = getTemplateById(activeTemplateId || '');
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div 
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      onKeyDown={(e) => e.key === 'Escape' && e.stopPropagation()}
+    >
       <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
@@ -202,14 +187,14 @@ const QuickBenefitModal: React.FC<QuickBenefitModalProps> = ({ isOpen, onClose, 
           <div className="space-y-6">
             {/* Template sections */}
             <div className="space-y-4">
-              <h3 className="text-lg font-medium text-gray-900">Template Content - {selectedCategory.charAt(0).toUpperCase() + selectedCategory.slice(1)}</h3>
+              <h3 className="text-lg font-medium text-gray-900">Template Content - {activeTemplate?.name || 'No Template Selected'}</h3>
               
               <div className="bg-gray-50 p-4 rounded-lg">
                 <h4 className="font-medium text-gray-800 mb-2">Benefits Overview</h4>
                 <div
                   className="text-gray-600 text-sm leading-relaxed whitespace-pre-wrap"
                   dangerouslySetInnerHTML={{ 
-                    __html: DOMPurify.sanitize(contentByCategory[selectedCategory].overview) || 'This section will contain benefits overview...' 
+                    __html: DOMPurify.sanitize(activeTemplate?.content.overview || '') || 'This section will contain benefits overview...' 
                   }}
                 />
               </div>
@@ -219,32 +204,80 @@ const QuickBenefitModal: React.FC<QuickBenefitModalProps> = ({ isOpen, onClose, 
 
         {/* Footer */}
         <div className="flex items-center justify-between p-6 border-t border-gray-200 gap-4">
-          {/* Category buttons */}
-          <div className="flex items-center gap-2 gap-y-2 flex-wrap" role="group" aria-label="Benefit category">
-            {([
-              {key: 'general', label: 'General', classes: 'bg-gray-600 hover:bg-gray-700'},
-              {key: 'category1', label: 'Category 1', classes: 'bg-blue-600 hover:bg-blue-700'},
-              {key: 'category2', label: 'Category 2', classes: 'bg-green-600 hover:bg-green-700'},
-              {key: 'category3', label: 'Category 3', classes: 'bg-purple-600 hover:bg-purple-700'},
-            ] as const).map(({key, label, classes}) => {
-              const isSelected = selectedCategory === key;
-              return (
+          {/* Template Management */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Template Selection Dropdown */}
+            <div className="flex items-center gap-2">
+              <select
+                value={activeTemplateId || ''}
+                onChange={(e) => setActiveTemplateId(e.target.value)}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
+                aria-label="Select template"
+              >
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Template Management Buttons */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowTemplateManager(true)}
+                className="px-2 py-1.5 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-colors"
+                title="Create new template"
+              >
+                + New
+              </button>
+              <button
+                onClick={() => setRenamingTemplateId(activeTemplateId)}
+                disabled={!activeTemplateId}
+                className="px-2 py-1.5 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Rename template"
+              >
+                Rename
+              </button>
+              <button
+                onClick={handleDeleteTemplate}
+                disabled={!activeTemplateId || templates.length <= 1}
+                className="px-2 py-1.5 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Delete template"
+              >
+                Delete
+              </button>
+            </div>
+
+            {/* Template Creation/Rename UI */}
+            {(showTemplateManager || renamingTemplateId) && (
+              <div className="flex items-center gap-2 bg-gray-50 p-2 rounded-md">
+                <input
+                  type="text"
+                  value={newTemplateName}
+                  onChange={(e) => setNewTemplateName(e.target.value)}
+                  placeholder={renamingTemplateId ? "New template name" : "Template name"}
+                  className="px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 text-black placeholder-black"
+                  autoFocus
+                />
                 <button
-                  key={key}
-                  type="button"
-                  onClick={() => setSelectedCategory(key)}
-                  {...(isSelected ? { "aria-pressed": "true" } : { "aria-pressed": "false" })}
-                  className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
-                    isSelected
-                      ? `${classes} text-white border-transparent`
-                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                  }`}
-                  title={label}
+                  onClick={renamingTemplateId ? handleRenameTemplate : handleCreateTemplate}
+                  className="px-2 py-1 text-sm font-medium text-white bg-blue-600 border border-transparent rounded hover:bg-blue-700"
                 >
-                  {label}
+                  Save
                 </button>
-              );
-            })}
+                <button
+                  onClick={() => {
+                    setShowTemplateManager(false);
+                    setRenamingTemplateId(null);
+                    setNewTemplateName('');
+                  }}
+                  className="px-2 py-1 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded hover:bg-gray-200"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Benefits button */}
@@ -270,13 +303,16 @@ const QuickBenefitModal: React.FC<QuickBenefitModalProps> = ({ isOpen, onClose, 
             <button
               onClick={() => {
                 onSave?.({
-                  selectedCategory,
-                  content: contentByCategory[selectedCategory],
+                  selectedTemplateId: activeTemplateId || '',
+                  templateName: activeTemplate?.name || '',
+                  content: activeTemplate?.content || { overview: '' },
                   resolvedBenefit
                 });
                 onClose();
               }}
-              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
+              disabled={!activeTemplateId || templates.length === 0}
+              {...((!activeTemplateId || templates.length === 0) && { 'aria-disabled': 'true' })}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Save Template
             </button>
@@ -296,12 +332,15 @@ const QuickBenefitModal: React.FC<QuickBenefitModalProps> = ({ isOpen, onClose, 
 
       {/* Content Editor Modal */}
       {showContentEditor && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]"
+          onKeyDown={(e) => e.key === 'Escape' && e.stopPropagation()}
+        >
           <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden">
             {/* Editor Header */}
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
               <h2 className="text-xl font-semibold text-gray-900">
-                Edit Template Content - {selectedCategory.charAt(0).toUpperCase() + selectedCategory.slice(1)}
+                Edit Template Content - {activeTemplate?.name || 'Template'}
               </h2>
               <button
                 onClick={() => setShowContentEditor(false)}
@@ -338,7 +377,7 @@ const QuickBenefitModal: React.FC<QuickBenefitModalProps> = ({ isOpen, onClose, 
                 Cancel
               </button>
               <button
-                onClick={() => handleContentSave(selectedCategory, editingContent)}
+                onClick={handleSaveTemplateContent}
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
               >
                 Save Content

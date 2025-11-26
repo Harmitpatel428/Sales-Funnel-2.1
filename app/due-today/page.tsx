@@ -1,18 +1,36 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useLeads } from '../context/LeadContext';
 import type { Lead } from '../types/shared';
 import { useRouter } from 'next/navigation';
-import LeadTable from '../components/LeadTable';
+import EditableTable from '../components/EditableTable';
+import { useColumns } from '../context/ColumnContext';
+import { useNavigation } from '../context/NavigationContext';
+import { validateLeadField } from '../hooks/useValidation';
+import { formatDateToDDMMYYYY } from '../utils/dateUtils';
+import * as XLSX from 'xlsx';
+
+const PasswordModal = lazy(() => import('../components/PasswordModal'));
+const PasswordSettingsModal = lazy(() => import('../components/PasswordSettingsModal'));
+const LeadDetailModal = lazy(() => import('../components/LeadDetailModal'));
+const LoadingSpinner = lazy(() => import('../components/LoadingSpinner'));
 
 export default function DueTodayPage() {
   const router = useRouter();
-  const { leads, deleteLead } = useLeads();
+  const { leads, deleteLead, updateLead } = useLeads();
+  const { getVisibleColumns } = useColumns();
+  const { setOnExportClick } = useNavigation();
   const [activeTab, setActiveTab] = useState<'today' | 'overdue'>('today');
-  const [selectedLeads, setSelectedLeads] = useState<Set<string>>(new Set());
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<Record<string, Record<string, string>>>({});
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('info');
+  const [showExportPasswordModal, setShowExportPasswordModal] = useState(false);
+  const [passwordSettingsOpen, setPasswordSettingsOpen] = useState(false);
+  const [columnCount, setColumnCount] = useState(0);
 
   // Handle URL parameters for tab selection
   useEffect(() => {
@@ -75,19 +93,250 @@ export default function DueTodayPage() {
     });
   }, [leads]);
 
+  // Show toast notification
+  const showToastNotification = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToastMessage(message);
+    setToastType(type);
+    setShowToast(true);
+    
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      setShowToast(false);
+    }, 3000);
+  }, []);
+
+  // Handle cell update
+  const handleCellUpdate = useCallback(async (leadId: string, field: string, value: string) => {
+    try {
+      // Find the lead
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) {
+        throw new Error('Lead not found');
+      }
+
+      // Get current column configuration to validate dynamic fields
+      const visibleColumns = getVisibleColumns();
+      const columnConfig = visibleColumns.find(col => col.fieldKey === field);
+      
+      if (process.env.NODE_ENV === 'development') {
+        console.log('🔧 Cell update debug:', { leadId, field, value, columnConfig });
+      }
+      
+      // Validate the field (including custom columns)
+      const error = validateLeadField(field as keyof Lead, value, lead, columnConfig);
+      
+      if (error) {
+        // Set validation error
+        setValidationErrors(prev => ({
+          ...prev,
+          [leadId]: {
+            ...prev[leadId],
+            [field]: error
+          }
+        }));
+        showToastNotification(error, 'error');
+        return;
+      }
+
+      // Clear validation error for this field
+      setValidationErrors(prev => {
+        const newErrors = { ...prev };
+        if (newErrors[leadId]) {
+          const leadErrors = { ...newErrors[leadId] };
+          delete leadErrors[field];
+          if (Object.keys(leadErrors).length === 0) {
+            delete newErrors[leadId];
+          } else {
+            newErrors[leadId] = leadErrors;
+          }
+        }
+        return newErrors;
+      });
+
+      // Format special fields
+      let formattedValue = value;
+      if (field === 'followUpDate' || field === 'connectionDate' || field === 'lastActivityDate') {
+        formattedValue = formatDateToDDMMYYYY(value);
+      } else if (field === 'mobileNumber') {
+        // Clean mobile number - remove any non-digit characters
+        formattedValue = value.replace(/[^0-9]/g, '');
+      }
+
+      // Create updated lead
+      let updatedLead = {
+        ...lead,
+        [field]: formattedValue
+      };
+
+      // Clear follow-up date when status changes to "Work Alloted"
+      if (field === 'status' && value === 'Work Alloted') {
+        updatedLead = { ...updatedLead, followUpDate: '' };
+      }
+
+      // Update the lead
+      await updateLead(updatedLead);
+      
+      if (field === 'status' && value === 'Work Alloted') {
+        showToastNotification('Status changed to WAO. Follow-up date has been cleared.', 'info');
+      } else {
+        showToastNotification('Lead updated successfully', 'success');
+      }
+    } catch (error) {
+      console.error('Error updating lead:', error);
+      showToastNotification('Failed to update lead. Please try again.', 'error');
+    }
+  }, [leads, getVisibleColumns, updateLead, showToastNotification]);
+
+  // Helper function to format dates for export (DD-MM-YYYY format only)
+  const formatDateForExport = (dateString: string): string => {
+    if (!dateString || dateString.trim() === '') {
+      return '';
+    }
+    
+    // If already in DD-MM-YYYY format, return as is
+    if (dateString.match(/^\d{2}-\d{2}-\d{4}$/)) {
+      return dateString;
+    }
+    
+    // If it's an ISO date string or Date object, convert to DD-MM-YYYY
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) {
+        return dateString; // Return original if invalid
+      }
+      
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      
+      return `${day}-${month}-${year}`;
+    } catch {
+      return dateString; // Return original if conversion fails
+    }
+  };
+
+  // Show export password modal
+  const handleExportExcel = () => {
+    setShowExportPasswordModal(true);
+  };
+
+  // Handle password verification for export
+  const handleExportPasswordSuccess = () => {
+    setShowExportPasswordModal(false);
+    performExport();
+  };
+
+  // Actual export function with password verification
+  const performExport = async () => {
+    try {
+      // Small delay to ensure pending header edits are saved
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Get filtered leads based on current view
+      const leadsToExport = activeTab === 'today' ? todayLeads : overdueLeads;
+      
+      // Use fresh column configuration to ensure latest columns are included
+      const visibleColumns = getVisibleColumns();
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📊 Export Debug - Using columns:', visibleColumns.map(c => c.label));
+        console.log('📊 Export Debug - Column types:', visibleColumns.map(c => ({ label: c.label, type: c.type, fieldKey: c.fieldKey })));
+      }
+      const headers = visibleColumns.map(column => column.label);
+      
+      // Convert leads to Excel rows with remapped data
+      const rows = leadsToExport.map(lead => {
+        // Get mobile numbers and contacts
+        const mobileNumbers = lead.mobileNumbers || [];
+        const mainMobile = mobileNumbers.find(m => m.isMain) || mobileNumbers[0] || { number: lead.mobileNumber || '', name: '' };
+        
+        // Format main mobile number (phone number only, no contact name)
+        const mainMobileDisplay = mainMobile.number || '';
+        if (process.env.NODE_ENV === 'development') {
+          console.log('🔍 Export Debug - Lead:', lead.clientName, 'Main Mobile:', mainMobileDisplay);
+        }
+        
+        // Map data according to visible columns using safe property access
+        return visibleColumns.map(column => {
+          const fieldKey = column.fieldKey;
+          const value = (lead as any)[fieldKey] ?? '';
+          
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`🔍 Export Debug - Field: ${fieldKey}, Value: ${value}, Type: ${column.type}`);
+          }
+          
+          // Handle special field formatting
+          switch (fieldKey) {
+            case 'kva':
+              return lead.kva || '';
+            case 'connectionDate':
+              return formatDateForExport(lead.connectionDate || '');
+            case 'consumerNumber':
+              return lead.consumerNumber || '';
+            case 'company':
+              return lead.company || '';
+            case 'clientName':
+              return lead.clientName || '';
+            case 'discom':
+              return lead.discom || '';
+            case 'mobileNumber':
+              return mainMobileDisplay;
+            case 'status':
+              return lead.status === 'Work Alloted' ? 'WAO' : (lead.status || 'New');
+            case 'lastActivityDate':
+              return formatDateForExport(lead.lastActivityDate || '');
+            case 'followUpDate':
+              return formatDateForExport(lead.followUpDate || '');
+            default:
+              // Handle custom columns with proper type checking
+              if (column.type === 'date' && value) {
+                return formatDateForExport(value);
+              } else if (column.type === 'number' && value) {
+                return Number(value) || '';
+              } else if (column.type === 'select' && value) {
+                return value; // Select values are already strings
+              } else {
+                return value || '';
+              }
+          }
+        });
+      });
+      
+      // Create workbook and worksheet
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(wb, ws, 'Leads');
+      
+      // Generate Excel file and download
+      XLSX.writeFile(wb, `leads-export-${new Date().toISOString().split('T')[0]}.xlsx`);
+      
+      // Close modal and show success message
+      setShowExportPasswordModal(false);
+      showToastNotification(`Successfully exported ${leadsToExport.length} leads to Excel format`, 'success');
+    } catch (error) {
+      console.error('Export error:', error);
+      showToastNotification('Failed to export leads. Please try again.', 'error');
+    }
+  };
+
   // Modal functions
   const openModal = (lead: Lead) => {
     setSelectedLead(lead);
     setIsModalOpen(true);
+    document.body.style.overflow = 'hidden';
   };
 
   const closeModal = () => {
     setSelectedLead(null);
     setIsModalOpen(false);
+    document.body.style.overflow = 'unset';
   };
 
   // Handle ESC key to close modal
   useEffect(() => {
+    if (isModalOpen) return; // Let LeadDetailModal handle ESC when modal is open
+    
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && isModalOpen) {
         closeModal();
@@ -112,6 +361,7 @@ export default function DueTodayPage() {
       if (lead) {
         setSelectedLead(lead);
         setIsModalOpen(true);
+        document.body.style.overflow = 'hidden';
       }
       
       // Clean up URL parameters
@@ -122,43 +372,43 @@ export default function DueTodayPage() {
     }
   }, [leads]);
 
+  // Set up navigation handlers
+  useEffect(() => {
+    setOnExportClick(() => handleExportExcel);
+  }, [setOnExportClick]);
+
+  // Column change detection to force re-render when columns are added/removed
+  useEffect(() => {
+    const currentColumnCount = getVisibleColumns().length;
+    if (currentColumnCount !== columnCount) {
+      if (process.env.NODE_ENV === 'development') {
+        console.log('🔄 Column count changed:', columnCount, '->', currentColumnCount);
+      }
+      setColumnCount(currentColumnCount);
+      
+      // Force more aggressive re-render by clearing cached filter results
+      // This ensures the table completely re-mounts with new column configuration
+      const tableKey = `table-${currentColumnCount}-${Date.now()}`;
+      if (process.env.NODE_ENV === 'development') {
+        console.log('🔄 Forcing table re-mount with key:', tableKey);
+      }
+      
+      // Force re-render by updating a dummy state
+      if (process.env.NODE_ENV === 'development') {
+        console.log('🔄 Table re-mounted with', currentColumnCount, 'columns');
+      }
+      
+      // Clear any validation errors that might be stale
+      setValidationErrors({});
+    }
+  }, [getVisibleColumns, columnCount, showToastNotification]);
+
   // Handle lead click
   const handleLeadClick = (lead: any) => {
     openModal(lead);
   };
 
-  // Handle lead selection
-  const handleLeadSelection = (leadId: string, checked: boolean) => {
-    const newSelected = new Set(selectedLeads);
-    if (checked) {
-      newSelected.add(leadId);
-    } else {
-      newSelected.delete(leadId);
-    }
-    setSelectedLeads(newSelected);
-  };
 
-  // Handle select all
-  const handleSelectAll = (checked: boolean) => {
-    const currentLeads = activeTab === 'today' ? todayLeads : overdueLeads;
-    if (checked) {
-      setSelectedLeads(new Set(currentLeads.map(lead => lead.id)));
-    } else {
-      setSelectedLeads(new Set());
-    }
-  };
-
-  // Handle bulk delete - no password protection
-  const handleBulkDeleteClick = () => {
-    if (selectedLeads.size === 0) return;
-    
-    // Direct deletion without password protection
-    selectedLeads.forEach(leadId => {
-      deleteLead(leadId);
-    });
-    
-    setSelectedLeads(new Set());
-  };
 
   // Handle edit lead
   const handleEditLead = (lead: Lead) => {
@@ -250,31 +500,18 @@ export default function DueTodayPage() {
             <div>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold text-black">Due Today</h2>
-                <div className="flex items-center space-x-3">
-                  <button
-                    onClick={() => handleSelectAll(selectedLeads.size === todayLeads.length ? false : true)}
-                    className="px-3 py-1 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
-                  >
-                    {selectedLeads.size === todayLeads.length ? 'Deselect All' : 'Select All'}
-                  </button>
-                  {selectedLeads.size > 0 && (
-                    <button
-                      onClick={handleBulkDeleteClick}
-                      className="px-3 py-1 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-                    >
-                      Delete Selected ({selectedLeads.size})
-                    </button>
-                  )}
-                </div>
               </div>
-              <LeadTable
+              <EditableTable
                 leads={todayLeads}
                 onLeadClick={handleLeadClick}
-                selectedLeads={selectedLeads}
-                onLeadSelection={handleLeadSelection}
                 showActions={true}
                 actionButtons={renderActionButtons}
                 emptyMessage="No leads with follow-ups due today"
+                editable={true}
+                onCellUpdate={handleCellUpdate}
+                validationErrors={validationErrors}
+                onExportClick={handleExportExcel}
+                headerEditable={true}
               />
             </div>
           )}
@@ -283,31 +520,18 @@ export default function DueTodayPage() {
             <div>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold text-black">Overdue Follow-ups</h2>
-                <div className="flex items-center space-x-3">
-                  <button
-                    onClick={() => handleSelectAll(selectedLeads.size === overdueLeads.length ? false : true)}
-                    className="px-3 py-1 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
-                  >
-                    {selectedLeads.size === overdueLeads.length ? 'Deselect All' : 'Select All'}
-                  </button>
-                  {selectedLeads.size > 0 && (
-                    <button
-                      onClick={handleBulkDeleteClick}
-                      className="px-3 py-1 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-                    >
-                      Delete Selected ({selectedLeads.size})
-                    </button>
-                  )}
-                </div>
               </div>
-              <LeadTable
+              <EditableTable
                 leads={overdueLeads}
                 onLeadClick={handleLeadClick}
-                selectedLeads={selectedLeads}
-                onLeadSelection={handleLeadSelection}
                 showActions={true}
                 actionButtons={renderActionButtons}
                 emptyMessage="No overdue follow-ups"
+                editable={true}
+                onCellUpdate={handleCellUpdate}
+                validationErrors={validationErrors}
+                onExportClick={handleExportExcel}
+                headerEditable={true}
               />
             </div>
           )}
@@ -316,47 +540,84 @@ export default function DueTodayPage() {
 
       {/* Modal */}
       {isModalOpen && selectedLead && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-5 mx-auto p-2 border w-11/12 md:w-5/6 lg:w-4/5 xl:w-3/4 shadow-lg rounded-md bg-white">
-            <div className="mt-1">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="text-xs font-medium text-black">Lead Details</h3>
-                <button
-                  onClick={closeModal}
-                  className="text-gray-400 hover:text-black transition-colors"
-                  title="Close modal"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <div className="p-4">
-                <p className="text-sm text-gray-600">Lead details for: {selectedLead.clientName}</p>
-                <div className="mt-4 flex space-x-2">
-                  <button
-                    onClick={closeModal}
-                    className="px-3 py-1 text-xs font-medium text-black bg-gray-100 border border-gray-300 rounded hover:bg-gray-200"
-                  >
-                    Close
-                  </button>
-                  {!selectedLead.isDeleted && (
-                    <button
-                      onClick={() => {
-                        closeModal();
-                        handleEditLead(selectedLead);
-                      }}
-                      className="px-3 py-1 text-xs font-medium text-white bg-blue-600 border border-transparent rounded hover:bg-blue-700"
-                    >
-                      Edit Lead
-                    </button>
-                  )}
-                </div>
-              </div>
+        <Suspense fallback={<div className="flex justify-center items-center h-64">Loading lead details...</div>}>
+          <LeadDetailModal
+            isOpen={isModalOpen}
+            lead={selectedLead}
+            onClose={closeModal}
+            onEdit={handleEditLead}
+          />
+        </Suspense>
+      )}
+
+      {/* Export Password Modal */}
+      {showExportPasswordModal && (
+        <Suspense fallback={<div className="flex justify-center items-center h-64">Loading...</div>}>
+          <PasswordModal
+            isOpen={showExportPasswordModal}
+            onClose={() => {
+            setShowExportPasswordModal(false);
+            }}
+            operation="export"
+            onSuccess={handleExportPasswordSuccess}
+            title="Export Leads"
+            description="Enter password to export leads data"
+          />
+        </Suspense>
+      )}
+
+      {/* Password Settings Modal */}
+      {passwordSettingsOpen && (
+        <Suspense fallback={<div className="flex justify-center items-center h-64">Loading...</div>}>
+          <PasswordSettingsModal
+            isOpen={passwordSettingsOpen}
+            onClose={() => setPasswordSettingsOpen(false)}
+            onPasswordChanged={() => {
+              // Refresh any cached verification status
+            }}
+          />
+        </Suspense>
+      )}
+
+      {/* Toast Notification */}
+      {showToast && (
+        <div className="fixed top-4 right-4 z-50">
+          <div className={`px-6 py-4 rounded-lg shadow-lg text-white font-medium ${
+            toastType === 'success' ? 'bg-green-600' :
+            toastType === 'error' ? 'bg-red-600' :
+            'bg-blue-600'
+          }`}>
+            <div className="flex items-center space-x-3">
+              {toastType === 'success' && (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+              {toastType === 'error' && (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              )}
+              {toastType === 'info' && (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
+              <span>{toastMessage}</span>
+              <button
+                onClick={() => setShowToast(false)}
+                className="ml-4 text-white hover:text-gray-200"
+                aria-label="Close notification"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }

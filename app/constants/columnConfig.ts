@@ -40,6 +40,7 @@ export const DEFAULT_HEADER_LABELS: Record<keyof Lead, string> = {
   unitType: 'Unit Type',
   marketingObjective: 'Marketing Objective',
   budget: 'Budget',
+  termLoan: 'Term Loan',
   timeline: 'Timeline',
   status: 'Status',
   contactOwner: 'Contact Owner',
@@ -72,6 +73,7 @@ export const FIELD_TYPES: Record<keyof Lead, 'text' | 'date' | 'select' | 'numbe
   unitType: 'select',
   marketingObjective: 'text',
   budget: 'text',
+  termLoan: 'text',
   timeline: 'text',
   status: 'select',
   contactOwner: 'text',
@@ -259,6 +261,13 @@ export const COLUMN_METADATA: Record<keyof Lead, {
     sortable: true,
     width: 100,
     description: 'Budget'
+  },
+  termLoan: {
+    type: 'text',
+    required: false,
+    sortable: true,
+    width: 100,
+    description: 'Term Loan'
   },
   timeline: {
     type: 'text',

@@ -31,6 +31,36 @@ export interface Activity {
   leadId: string;
   description: string;
   timestamp: string;
+  employeeName?: string;
+  activityType?: 'call'|'email'|'meeting'|'follow_up'|'note'|'status_change'|'edit'|'created'|'other';
+  duration?: number;
+  metadata?: Record<string, any>;
+}
+
+/**
+ * Work session interface for tracking time spent on leads
+ */
+export interface WorkSession {
+  id: string; // Unique session identifier
+  leadId: string; // Lead being worked on
+  leadName: string; // Lead name for display
+  startTime: string; // ISO timestamp when session started
+  endTime?: string; // ISO timestamp when session ended (undefined if ongoing)
+  duration?: number; // Calculated duration in minutes
+  employeeName: string; // Employee who worked on this session
+}
+
+/**
+ * Work stats interface for personal analytics
+ */
+export interface WorkStats {
+  totalActivities: number; // Total activities logged by this employee
+  totalLeadsTouched: number; // Unique leads worked on
+  totalTimeSpent: number; // Total minutes spent in work sessions
+  activitiesByType: Record<string, number>; // Count per activity type (call: 5, email: 3, etc.)
+  lastActivityDate: string; // ISO timestamp of last activity
+  periodStart: string; // Start of reporting period
+  periodEnd: string; // End of reporting period
 }
 
 // ============================================================================
@@ -56,6 +86,7 @@ export interface Lead {
   unitType: 'New' | 'Existing' | 'Other' | string; // Allow custom unit types
   marketingObjective?: string;
   budget?: string;
+  termLoan?: string;
   timeline?: string;
   status: 'New' | 'CNR' | 'Busy' | 'Follow-up' | 'Deal Close' | 'Work Alloted' | 'Hotlead' | 'Mandate Sent' | 'Documentation' | 'Others';
   contactOwner?: string;
@@ -79,7 +110,6 @@ export interface LeadFilters {
   followUpDateStart?: string;
   followUpDateEnd?: string;
   searchTerm?: string;
-  discom?: string;
 }
 
 /**
@@ -131,7 +161,11 @@ export interface LeadContextType {
   deleteLead: (id: string) => void;
   permanentlyDeleteLead: (id: string) => void;
   markAsDone: (id: string) => void;
-  addActivity: (leadId: string, description: string) => void;
+  addActivity: (leadId: string, description: string, options?: {
+    activityType?: Activity['activityType'],
+    duration?: number,
+    metadata?: Record<string, any>
+  }) => void;
   getFilteredLeads: (filters: LeadFilters) => Lead[];
   resetUpdatedLeads: () => void;
   savedViews: SavedView[];

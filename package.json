@@ -7,6 +7,7 @@
     "dev": "next dev",
     "build": "next build --no-lint",
     "build:prod": "next build --no-lint --no-mangling",
+    "export:prod": "next build --no-lint --no-mangling",
     "start": "next start",
     "lint": "eslint . --ext .ts,.tsx --fix",
     "lint:check": "eslint . --ext .ts,.tsx",
@@ -21,7 +22,9 @@
     "build-electron:win": "npm run clean:win && npm run build:prod && electron-builder --win",
     "dist": "npm run build-electron",
     "dist:win": "npm run build-electron:win",
-    "build:optimized": "node scripts/build-optimized.js",
+    "package:client": "node scripts/package-for-client.js",
+    "build:installer": "npm run package:client",
+    "verify:build": "node scripts/verify-build.js",
     "auto-commit": "node auto-commit.js",
     "auto-commit:start": "start-auto-commit.bat",
     "dev:full": "start-development.bat",
@@ -70,12 +73,12 @@
   "build": {
     "appId": "com.enterpriseleadmgmt.app",
     "productName": "Enterprise Lead Management System",
+    "asar": true,
     "directories": {
       "output": "dist",
       "buildResources": "build"
     },
     "files": [
-      "out/**/*",
       "electron/**/*",
       "node_modules/**/*",
       "!node_modules/**/*.d.ts",
@@ -84,14 +87,17 @@
       "!node_modules/**/*.md",
       "!node_modules/**/README*",
       "!node_modules/**/CHANGELOG*",
-      "!node_modules/**/LICENSE*"
+      "!node_modules/**/LICENSE*",
+      "!node_modules/**/*.map",
+      "!**/*.map"
     ],
     "extraResources": [
       {
         "from": "out",
         "to": "app",
         "filter": [
-          "**/*"
+          "**/*",
+          "!**/*.map"
         ]
       }
     ],
@@ -105,16 +111,26 @@
         }
       ],
       "requestedExecutionLevel": "asInvoker",
-      "artifactName": "${productName} Setup ${version}.${ext}"
+      "artifactName": "${productName} Setup ${version}.${ext}",
+      "oneClick": true,
+      "perMachine": false,
+      "icon": "build/icon.ico"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Enterprise Lead Management System",
       "deleteAppDataOnUninstall": false,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "compression": "normal",
+      "preCompressedFileExtensions": [".avi", ".mov", ".mp4", ".mkv", ".webm", ".zip", ".7z", ".png", ".jpg", ".jpeg", ".gif", ".webp"],
+      "installerIcon": "build/installerIcon.ico",
+      "uninstallerIcon": "build/installerIcon.ico",
+      "include": "build/installer.nsh",
+      "license": "build/license.txt",
+      "installerHeaderIcon": "build/installerHeaderIcon.ico",
+      "displayLanguageSelector": false
     },
     "mac": {
       "target": "dmg"

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { X, ChevronDown, Search } from 'lucide-react';
 import { 
   getTalukasByDistrict, 
@@ -71,6 +71,7 @@ const Dropdown: React.FC<DropdownProps> = ({
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'Escape') {
+      event.stopPropagation();
       onClose();
     }
   };
@@ -179,6 +180,7 @@ const TalukaDropdown: React.FC<{
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'Escape') {
+      event.stopPropagation();
       onClose();
     }
   };
@@ -291,6 +293,31 @@ const BenefitsModal: React.FC<BenefitsModalProps> = ({
     }
   }, [selectedDistrict, selectedTaluka]);
 
+  const handleClose = useCallback(() => {
+    setSelectedTaluka('');
+    setDistrictSearchTerm('');
+    setTalukaSearchTerm('');
+    setIsDistrictDropdownOpen(false);
+    setIsTalukaDropdownOpen(false);
+    setResolvedCategory(null);
+    onClose();
+  }, [onClose]);
+
+  // ESC key handler
+  useEffect(() => {
+    if (!isOpen) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        handleClose();
+      }
+    };
+    
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, handleClose]);
+
   const handleDistrictSelect = (district: string) => {
     setSelectedDistrict(district);
     setSelectedTaluka('');
@@ -314,16 +341,6 @@ const BenefitsModal: React.FC<BenefitsModalProps> = ({
     }
   };
 
-  const handleClose = () => {
-    setSelectedTaluka('');
-    setDistrictSearchTerm('');
-    setTalukaSearchTerm('');
-    setIsDistrictDropdownOpen(false);
-    setIsTalukaDropdownOpen(false);
-    setResolvedCategory(null);
-    onClose();
-  };
-
   const handleReset = () => {
     setSelectedDistrict('');
     setSelectedTaluka('');
@@ -342,7 +359,10 @@ const BenefitsModal: React.FC<BenefitsModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-60">
+    <div 
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-60"
+      onKeyDown={(e) => e.key === 'Escape' && e.stopPropagation()}
+    >
       <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <h2 className="text-xl font-semibold text-gray-900">Select Benefits Category</h2>

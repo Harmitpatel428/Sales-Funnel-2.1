@@ -1754,3 +1754,91 @@ export function isSavedViewArray(data: unknown): data is SavedView[] {
     'filters' in item
   );
 }
+
+/**
+ * Repair corrupted leads data
+ * @param corruptedData - Corrupted leads data
+ * @returns Repaired leads data
+ */
+export function repairCorruptedLeads(corruptedData: any): any[] {
+  if (!Array.isArray(corruptedData)) {
+    return [];
+  }
+
+  return corruptedData.map((lead: any, index: number) => {
+    if (!lead || typeof lead !== 'object') {
+      return {
+        id: `repaired-${index}`,
+        clientName: 'Unknown',
+        company: 'Unknown',
+        status: 'New',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+    }
+
+    // Ensure required fields exist
+    const repairedLead = {
+      id: lead.id || `repaired-${index}`,
+      clientName: lead.clientName || 'Unknown',
+      company: lead.company || 'Unknown',
+      status: lead.status || 'New',
+      createdAt: lead.createdAt || new Date().toISOString(),
+      updatedAt: lead.updatedAt || new Date().toISOString(),
+      ...lead
+    };
+
+    // Ensure mobileNumbers is an array
+    if (!Array.isArray(repairedLead.mobileNumbers)) {
+      repairedLead.mobileNumbers = [];
+    }
+
+    // Ensure activities is an array
+    if (!Array.isArray(repairedLead.activities)) {
+      repairedLead.activities = [];
+    }
+
+    return repairedLead;
+  });
+}
+
+/**
+ * Repair corrupted column configuration
+ * @param corruptedData - Corrupted column configuration
+ * @returns Repaired column configuration
+ */
+export function repairColumnConfig(corruptedData: any): any[] {
+  if (!Array.isArray(corruptedData)) {
+    return [];
+  }
+
+  return corruptedData.map((config: any, index: number) => {
+    if (!config || typeof config !== 'object') {
+      return {
+        id: `repaired-column-${index}`,
+        fieldKey: `field_${index}`,
+        label: `Field ${index}`,
+        type: 'text',
+        required: false,
+        sortable: true,
+        width: 150,
+        visible: true,
+        description: 'Repaired column'
+      };
+    }
+
+    // Ensure required fields exist
+    return {
+      id: config.id || `repaired-column-${index}`,
+      fieldKey: config.fieldKey || `field_${index}`,
+      label: config.label || `Field ${index}`,
+      type: config.type || 'text',
+      required: Boolean(config.required),
+      sortable: Boolean(config.sortable),
+      width: Number(config.width) || 150,
+      visible: Boolean(config.visible),
+      description: config.description || 'Repaired column',
+      ...config
+    };
+  });
+}

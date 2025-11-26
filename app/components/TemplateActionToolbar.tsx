@@ -207,7 +207,6 @@ const TemplateActionToolbar: React.FC<TemplateActionToolbarProps> = ({
 
       {/* WhatsApp Dropdown - Rendered via Portal */}
       {showWhatsAppDropdown && typeof window !== 'undefined' && createPortal(
-        {/* Inline style required for dynamic portal positioning - position calculated at runtime based on button location */}
         <div 
           ref={dropdownRef}
           className="fixed w-48 bg-white border border-gray-200 rounded-md shadow-lg z-[70]"

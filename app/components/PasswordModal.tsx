@@ -102,6 +102,7 @@ const PasswordModal: React.FC<PasswordModalProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
+      e.stopPropagation();
       onClose();
     }
   };

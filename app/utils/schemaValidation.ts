@@ -566,7 +566,7 @@ export function validateSavedViewFields(view: any): ValidationResult {
   
   // Validate filters structure
   if (view.filters && typeof view.filters === 'object') {
-    const validFilterKeys = ['status', 'followUpDateStart', 'followUpDateEnd', 'searchTerm', 'discom'];
+    const validFilterKeys = ['status', 'followUpDateStart', 'followUpDateEnd', 'searchTerm'];
     for (const key of Object.keys(view.filters)) {
       if (!validFilterKeys.includes(key)) {
         warnings.push(`Unknown filter key: ${key}`);

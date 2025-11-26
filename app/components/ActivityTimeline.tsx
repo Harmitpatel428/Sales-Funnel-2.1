@@ -1,16 +1,15 @@
 'use client';
 
-import { useState } from 'react';
 import type { Activity } from '../types/shared';
+import ActivityLogger from './ActivityLogger';
 
 interface ActivityTimelineProps {
   activities: Activity[];
   onAddActivity?: (description: string) => void;
+  leadId?: string;
 }
 
-export default function ActivityTimeline({ activities = [], onAddActivity }: ActivityTimelineProps) {
-  const [newActivity, setNewActivity] = useState('');
-  
+export default function ActivityTimeline({ activities = [], onAddActivity, leadId }: ActivityTimelineProps) {
   // Format date for display
   const formatDate = (dateString: string) => {
     if (!dateString) return '';
@@ -23,33 +22,49 @@ export default function ActivityTimeline({ activities = [], onAddActivity }: Act
       minute: '2-digit'
     });
   };
-  
-  // Handle add activity
-  const handleAddActivity = () => {
-    if (!newActivity.trim() || !onAddActivity) return;
-    
-    onAddActivity(newActivity);
-    setNewActivity('');
+
+  // Get activity type icon
+  const getActivityIcon = (type?: Activity['activityType']) => {
+    const icons = {
+      call: '📞',
+      email: '📧',
+      meeting: '📅',
+      follow_up: '🔔',
+      status_change: '🔄',
+      edit: '✏️',
+      created: '✨',
+      note: '📝',
+      other: '📊'
+    };
+    return icons[type || 'note'];
+  };
+
+  // Get activity type background color
+  const getActivityBgColor = (type?: Activity['activityType']) => {
+    const colors = {
+      call: 'bg-blue-50',
+      email: 'bg-green-50',
+      meeting: 'bg-purple-50',
+      follow_up: 'bg-orange-50',
+      status_change: 'bg-yellow-50',
+      edit: 'bg-gray-50',
+      created: 'bg-pink-50',
+      note: 'bg-gray-50',
+      other: 'bg-gray-50'
+    };
+    return colors[type || 'note'];
   };
   
   return (
     <div className="space-y-4">
-      {/* Add New Activity (if callback provided) */}
-      {onAddActivity && (
-        <div className="mb-6 flex">
-          <input
-            type="text"
-            value={newActivity}
-            onChange={(e) => setNewActivity(e.target.value)}
-            placeholder="Add a new activity or note..."
-            className="flex-grow px-3 py-2 border border-gray-300 rounded-l-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-black placeholder:text-black"
+      {/* Add New Activity using ActivityLogger */}
+      {onAddActivity && leadId && (
+        <div className="mb-6">
+          <ActivityLogger 
+            leadId={leadId} 
+            onActivityAdded={() => {/* Activity already added via context */}}
+            compact={true}
           />
-          <button
-            onClick={handleAddActivity}
-            className="px-4 py-2 bg-blue-600 text-white rounded-r-md hover:bg-blue-700 transition-colors"
-          >
-            Add
-          </button>
         </div>
       )}
       
@@ -64,8 +79,28 @@ export default function ActivityTimeline({ activities = [], onAddActivity }: Act
               )}
             </div>
             <div className="flex-grow pb-4">
-              <p className="text-sm text-gray-500">{formatDate(activity.timestamp)}</p>
-              <p className="text-gray-900">{activity.description}</p>
+              <div className={`rounded-lg p-3 ${getActivityBgColor(activity.activityType)}`}>
+                {/* Header Row */}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">{getActivityIcon(activity.activityType)}</span>
+                    <span className="text-sm text-gray-500">{formatDate(activity.timestamp)}</span>
+                  </div>
+                  {activity.duration && (
+                    <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
+                      {activity.duration} min
+                    </span>
+                  )}
+                </div>
+                
+                {/* Description */}
+                <p className="text-gray-900 mb-1">{activity.description}</p>
+                
+                {/* Footer Row - Employee Name */}
+                {activity.employeeName && (
+                  <p className="text-xs text-gray-500">by {activity.employeeName}</p>
+                )}
+              </div>
             </div>
           </div>
         ))

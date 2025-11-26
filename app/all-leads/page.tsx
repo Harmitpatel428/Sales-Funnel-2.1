@@ -8,10 +8,10 @@ import { useColumns } from '../context/ColumnContext';
 import { useRouter } from 'next/navigation';
 import EditableTable from '../components/EditableTable';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { validateLeadField, validateDynamicField, validateImportedLead, validateImportedLeads, getImportSuggestions } from '../hooks/useValidation';
+import { validateLeadField, validateDynamicField } from '../hooks/useValidation';
 import { useDebouncedValue } from '../utils/debounce';
-import { validateExportHeaders, getRequiredExportHeaders, getMobileNumberHeaders, validateRequiredHeaders, getExportSuggestions, detectHeaderRow, isEmptyRow, isLikelyHeaderRow, getHeaderPatternScore, validateMappings, findDuplicateMappings, suggestMapping, createImportStats, updateImportStats, formatImportStats, type ImportStats, type HeaderDetectionResult } from '../constants/exportUtils';
-import { calculateSimilarity, findBestFuzzyMatch, normalizeHeader, getHeaderVariations } from '../utils/stringUtils';
+import { validateExportHeaders, validateRequiredHeaders, getExportSuggestions, getHeaderPatternScore } from '../constants/exportUtils';
+import { findBestFuzzyMatch, normalizeHeader, getHeaderVariations } from '../utils/stringUtils';
 import * as XLSX from 'xlsx';
 
 const LeadDetailModal = lazy(() => import('../components/LeadDetailModal'));
@@ -35,14 +35,13 @@ export const EXPORT_HEADERS = [
   'Address',
   'Next Follow-up Date',
   'Last Activity Date',
+  'Term Loan',
   'Mobile Number 2', 
   'Contact Name 2', 
   'Mobile Number 3', 
   'Contact Name 3'
 ] as const;
 
-// Re-export getExportHeaders for discoverability
-export { getExportHeaders } from '../constants/exportUtils';
 
 // Legacy static mappings - now handled dynamically by fieldMapping
 // This constant is kept for reference but should not be used in new code
@@ -88,12 +87,16 @@ const _LEGACY_IMPORT_FIELD_MAPPINGS = {
   'followup date': 'followUpDate',
   'last activity date': 'lastActivityDate',
   'last activity': 'lastActivityDate',
-  'activity date': 'lastActivityDate'
+  'activity date': 'lastActivityDate',
+  'term loan': 'termLoan',
+  'termloan': 'termLoan',
+  'loan term': 'termLoan',
+  'loan duration': 'termLoan'
 } as const;
 
 export default function AllLeadsPage() {
   const router = useRouter();
-  const { leads, setLeads, permanentlyDeleteLead, skipPersistence, setSkipPersistence } = useLeads();
+  const { leads, setLeads, permanentlyDeleteLead } = useLeads();
   const { headerConfig } = useHeaders();
   const { getVisibleColumns } = useColumns();
   const [searchInput, setSearchInput] = useState('');
@@ -350,8 +353,8 @@ export default function AllLeadsPage() {
     });
     
     // Add logging for mapping conflicts
-    const duplicates = Object.entries(dynamicMapping).filter(([k, v], i, arr) => 
-      arr.findIndex(([k2, v2]) => v === v2) !== i
+    const duplicates = Object.entries(dynamicMapping).filter(([, v], i, arr) => 
+      arr.findIndex(([, v2]) => v === v2) !== i
     );
     
     if (duplicates.length > 0) {
@@ -391,11 +394,14 @@ export default function AllLeadsPage() {
       if (process.env.NODE_ENV === 'development') {
         console.log(`🔍 Fuzzy matched '${header}' to '${fuzzyMatch.match}' (score: ${Math.round(fuzzyMatch.score * 100)}%)`);
       }
-      return {
-        fieldKey: dynamicMapping[fuzzyMatch.match],
-        matchType: 'fuzzy',
-        score: fuzzyMatch.score
-      };
+      const fieldKey = dynamicMapping[fuzzyMatch.match];
+      if (fieldKey) {
+        return {
+          fieldKey,
+          matchType: 'fuzzy',
+          score: fuzzyMatch.score
+        };
+      }
     }
     
     if (process.env.NODE_ENV === 'development') {
@@ -418,6 +424,16 @@ export default function AllLeadsPage() {
     leadIds?: string[];
   } | null>(null);
   
+  // Export password modal state
+  const [showExportPasswordModal, setShowExportPasswordModal] = useState<boolean>(false);
+  
+  // Clean up pending delete operation when modal closes
+  useEffect(() => {
+    if (!showPasswordModal) {
+      setPendingDeleteOperation(null);
+    }
+  }, [showPasswordModal]);
+  
   // Toast notification states
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
@@ -426,11 +442,33 @@ export default function AllLeadsPage() {
   // Editable table states
   const [validationErrors, setValidationErrors] = useState<Record<string, Record<string, string>>>({});
   
-  const [importStats, setImportStats] = useState<ImportStats>(createImportStats());
   
   // Import progress tracking state
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  
+  // Session verification state
+  const [isSessionVerified, setIsSessionVerified] = useState(false);
+
+  // Check session verification status on component mount
+  useEffect(() => {
+    const checkSessionStatus = () => {
+      const isVerified = sessionStorage.getItem('verified_rowManagement');
+      setIsSessionVerified(!!isVerified);
+    };
+    
+    checkSessionStatus();
+    
+    // Listen for storage changes to update state when verification is added/removed
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'verified_rowManagement') {
+        checkSessionStatus();
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
 
   // Show toast notification
   const showToastNotification = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -444,19 +482,6 @@ export default function AllLeadsPage() {
     }, 3000);
   }, []);
 
-  // Clear saved mappings function
-  const clearSavedMappings = useCallback(() => {
-    try {
-      localStorage.removeItem('importColumnMappings');
-      if (process.env.NODE_ENV === 'development') {
-        console.log('🗑️ Cleared saved mappings from localStorage');
-      }
-      showToastNotification('Saved mappings cleared', 'success');
-    } catch (error) {
-      console.error('Failed to clear saved mappings:', error);
-      showToastNotification('Failed to clear saved mappings', 'error');
-    }
-  }, [showToastNotification]);
 
   // Handle cell update
   const handleCellUpdate = useCallback(async (leadId: string, field: string, value: string) => {
@@ -685,26 +710,58 @@ export default function AllLeadsPage() {
 
   // Password protection functions using centralized PasswordContext
   const handleDeleteClick = (lead: Lead) => {
-    setPendingDeleteOperation({ type: 'single', lead });
-    setShowPasswordModal(true);
+    // Check if user is already verified for this session
+    const isVerified = sessionStorage.getItem('verified_rowManagement');
+    
+    if (isVerified) {
+      // Execute delete operation directly without showing modal
+      performSingleDelete(lead.id);
+    } else {
+      // Show password modal for verification
+      setPendingDeleteOperation({ type: 'single', lead });
+      setShowPasswordModal(true);
+    }
+  };
+
+  // Clear session verification
+  const clearSessionVerification = () => {
+    sessionStorage.removeItem('verified_rowManagement');
+    setIsSessionVerified(false);
+    showToastNotification('Session verification cleared', 'info');
+  };
+
+  // Helper functions for delete operations
+  const performSingleDelete = (leadId: string) => {
+    permanentlyDeleteLead(leadId);
+    showToastNotification('Lead permanently deleted', 'success');
+    
+    // Close Lead Detail Modal if it's open
+    if (showLeadModal) {
+      setShowLeadModal(false);
+      document.body.style.overflow = 'unset';
+    }
+  };
+
+  const performBulkDelete = (leadIds: string[]) => {
+    leadIds.forEach(leadId => permanentlyDeleteLead(leadId));
+    setSelectedLeads(new Set());
+    showToastNotification(`${leadIds.length} leads permanently deleted`, 'success');
   };
 
   const handlePasswordSuccess = () => {
     if (!pendingDeleteOperation) return;
     
     if (pendingDeleteOperation.type === 'single' && pendingDeleteOperation.lead) {
-      // Permanently delete when deleting from All Leads page
-      permanentlyDeleteLead(pendingDeleteOperation.lead.id);
-      showToastNotification('Lead permanently deleted', 'success');
+      performSingleDelete(pendingDeleteOperation.lead.id);
     } else if (pendingDeleteOperation.type === 'bulk' && pendingDeleteOperation.leadIds) {
-      // Permanently delete all selected leads
-      pendingDeleteOperation.leadIds.forEach(leadId => permanentlyDeleteLead(leadId));
-      setSelectedLeads(new Set());
-      showToastNotification(`${pendingDeleteOperation.leadIds.length} leads permanently deleted`, 'success');
+      performBulkDelete(pendingDeleteOperation.leadIds);
     }
     
     setShowPasswordModal(false);
     setPendingDeleteOperation(null);
+    
+    // Update session verification state
+    setIsSessionVerified(true);
   };
 
   const handlePasswordCancel = () => {
@@ -733,8 +790,18 @@ export default function AllLeadsPage() {
 
   const handleBulkDeleteClick = () => {
     if (selectedLeads.size === 0) return;
-    setPendingDeleteOperation({ type: 'bulk', leadIds: Array.from(selectedLeads) });
-    setShowPasswordModal(true);
+    
+    // Check if user is already verified for this session
+    const isVerified = sessionStorage.getItem('verified_rowManagement');
+    
+    if (isVerified) {
+      // Execute delete operation directly without showing modal
+      performBulkDelete(Array.from(selectedLeads));
+    } else {
+      // Show password modal for verification
+      setPendingDeleteOperation({ type: 'bulk', leadIds: Array.from(selectedLeads) });
+      setShowPasswordModal(true);
+    }
   };
 
   // Bulk restore function
@@ -1269,14 +1336,14 @@ export default function AllLeadsPage() {
         ensureMobileNumberSlots(lead, 2);
         
         // Set the second mobile number (index 1)
-        lead.mobileNumbers[1] = { 
+        lead.mobileNumbers![1] = { 
           id: '2', 
           number: String(value), 
-          name: lead.mobileNumbers[1]?.name || '', 
+          name: lead.mobileNumbers![1]?.name || '', 
           isMain: false
         };
         if (process.env.NODE_ENV === 'development') {
-          console.log('Set mobile number 2:', lead.mobileNumbers[1]);
+          console.log('Set mobile number 2:', lead.mobileNumbers![1]);
           console.log('Final mobileNumbers array:', lead.mobileNumbers);
         }
         break;
@@ -1300,14 +1367,14 @@ export default function AllLeadsPage() {
         ensureMobileNumberSlots(lead, 3);
         
         // Set the third mobile number (index 2)
-        lead.mobileNumbers[2] = { 
+        lead.mobileNumbers![2] = { 
           id: '3', 
           number: String(value), 
-          name: lead.mobileNumbers[2]?.name || '', 
+          name: lead.mobileNumbers![2]?.name || '', 
           isMain: false 
         };
         if (process.env.NODE_ENV === 'development') {
-          console.log('Set mobile number 3:', lead.mobileNumbers[2]);
+          console.log('Set mobile number 3:', lead.mobileNumbers![2]);
         }
         break;
       // Contact Name 2 - complex array logic
@@ -1337,14 +1404,14 @@ export default function AllLeadsPage() {
         ensureMobileNumberSlots(lead, 2);
         
         // Set the second contact name (index 1)
-        lead.mobileNumbers[1] = { 
+        lead.mobileNumbers![1] = { 
           id: '2', 
-          number: lead.mobileNumbers[1]?.number || '', 
+          number: lead.mobileNumbers![1]?.number || '', 
           name: String(value), 
           isMain: false 
         };
         if (process.env.NODE_ENV === 'development') {
-          console.log('Set contact name 2:', lead.mobileNumbers[1]);
+          console.log('Set contact name 2:', lead.mobileNumbers![1]);
           console.log('Final mobileNumbers array:', lead.mobileNumbers);
         }
         break;
@@ -1366,14 +1433,14 @@ export default function AllLeadsPage() {
         ensureMobileNumberSlots(lead, 3);
         
         // Set the third contact name (index 2)
-        lead.mobileNumbers[2] = { 
+        lead.mobileNumbers![2] = { 
           id: '3', 
-          number: lead.mobileNumbers[2]?.number || '', 
+          number: lead.mobileNumbers![2]?.number || '', 
           name: String(value), 
           isMain: false 
         };
         if (process.env.NODE_ENV === 'development') {
-          console.log('Set contact name 3:', lead.mobileNumbers[2]);
+          console.log('Set contact name 3:', lead.mobileNumbers![2]);
         }
         break;
       // Status - complex mapping logic
@@ -1638,10 +1705,10 @@ export default function AllLeadsPage() {
       // Use helper function to ensure proper initialization
       ensureMobileNumberSlots(lead, 2);
       
-      lead.mobileNumbers[1] = { 
+      lead.mobileNumbers![1] = { 
         id: '2', 
         number: String(value), 
-        name: lead.mobileNumbers[1]?.name || '', 
+        name: lead.mobileNumbers![1]?.name || '', 
         isMain: false 
       };
       return;
@@ -1655,9 +1722,9 @@ export default function AllLeadsPage() {
       // Use helper function to ensure proper initialization
       ensureMobileNumberSlots(lead, 2);
       
-      lead.mobileNumbers[1] = { 
+      lead.mobileNumbers![1] = { 
         id: '2', 
-        number: lead.mobileNumbers[1]?.number || '', 
+        number: lead.mobileNumbers![1]?.number || '', 
         name: String(value), 
         isMain: false 
       };
@@ -1680,41 +1747,6 @@ export default function AllLeadsPage() {
     );
   };
 
-  const isLikelyHeaderRow = (row: any[]): boolean => {
-    if (!row || row.length < 3) return false;
-    
-    // Check for common header keywords
-    const headerKeywords = [
-      'name', 'number', 'date', 'status', 'id', 'type', 'mobile', 'phone',
-      'client', 'customer', 'lead', 'kva', 'address', 'email', 'contact',
-      'amount', 'price', 'value', 'description', 'remarks', 'notes'
-    ];
-    
-    const textCells = row.filter(cell => 
-      typeof cell === 'string' && cell.trim().length > 0
-    );
-    
-    if (textCells.length < 3) return false;
-    
-    // Check if cells contain header-like keywords
-    const keywordMatches = textCells.filter(cell => 
-      headerKeywords.some(keyword => 
-        normalizeHeader(cell).includes(keyword)
-      )
-    ).length;
-    
-    // Check for text vs number ratio
-    const numberCells = row.filter(cell => 
-      typeof cell === 'number' || 
-      (typeof cell === 'string' && !isNaN(Number(cell)) && cell.trim() !== '')
-    );
-    
-    const textRatio = textCells.length / row.length;
-    const keywordRatio = keywordMatches / textCells.length;
-    
-    // Headers should be mostly text and contain keywords
-    return textRatio > 0.6 && keywordRatio > 0.3;
-  };
 
   const detectHeaderRowIndex = (rows: any[][]): number => {
     if (!rows || rows.length === 0) return 0;
@@ -1727,7 +1759,7 @@ export default function AllLeadsPage() {
     
     for (let i = 0; i < maxRowsToCheck; i++) {
       const row = rows[i];
-      if (isEmptyRow(row)) continue;
+      if (!row || isEmptyRow(row)) continue;
       
       const score = getHeaderPatternScore(row);
       if (score > bestScore) {
@@ -1753,11 +1785,12 @@ export default function AllLeadsPage() {
       if (!sheetName) return [];
       
       const worksheet = workbook.Sheets[sheetName];
+      if (!worksheet) return [];
+      
       const jsonData = XLSX.utils.sheet_to_json(worksheet, { 
         header: 1,
         raw: false,
-        defval: '',
-        skipEmptyLines: true
+        defval: ''
       });
       
       if (jsonData.length < 2) return [];
@@ -1881,9 +1914,7 @@ export default function AllLeadsPage() {
               header: 1,
               raw: false,
               defval: '',
-              dateNF: 'DD-MM-YYYY',
-              cellDates: false,
-              cellText: true
+              dateNF: 'DD-MM-YYYY'
             });
             if (process.env.NODE_ENV === 'development') {
               console.log('JSON data:', jsonData);
@@ -2211,9 +2242,7 @@ export default function AllLeadsPage() {
       }
 
       // Skip persistence during bulk import for performance
-      if (setSkipPersistence) {
-        setSkipPersistence(true);
-      }
+      // Note: Persistence skipping removed for now
       const leadsWithIds = leads.map((lead, index) => {
         setDefaultValues(lead, true);
         return {
@@ -2244,9 +2273,7 @@ export default function AllLeadsPage() {
       }
       
       // Re-enable persistence after import completes
-      if (setSkipPersistence) {
-        setSkipPersistence(false);
-      }
+      // Note: Persistence skipping removed for now
       
       // Show success notification
       setShowToast(true);
@@ -2322,6 +2349,19 @@ export default function AllLeadsPage() {
 
   // Export function (copied from dashboard)
   const handleExportExcel = async () => {
+    if (sessionStorage.getItem('verified_export')) {
+      await performExport();
+    } else {
+      setShowExportPasswordModal(true);
+    }
+  };
+
+  const handleExportPasswordSuccess = () => {
+    setShowExportPasswordModal(false);
+    performExport();
+  };
+
+  const performExport = async () => {
     try {
       // Small delay to ensure pending header edits are saved
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -2331,7 +2371,7 @@ export default function AllLeadsPage() {
       
       // Use dynamic export headers based on current column configuration
       const visibleColumns = getVisibleColumns();
-      let headers = visibleColumns.map(column => column.label);
+      const headers = visibleColumns.map(column => column.label);
       
       // Add logging to track export headers
       console.log('📤 Export Headers:', headers);
@@ -2368,7 +2408,7 @@ export default function AllLeadsPage() {
         console.log('🔍 Export Debug - Lead:', lead.clientName, 'Main Mobile:', mainMobileDisplay);
         
         // Map data according to visible columns
-        let rowData = visibleColumns.map(column => {
+        const rowData = visibleColumns.map(column => {
           const fieldKey = column.fieldKey;
           const value = (lead as any)[fieldKey] ?? '';
           
@@ -2426,7 +2466,6 @@ export default function AllLeadsPage() {
       // Add export validation using helper functions
       const headerValidation = validateExportHeaders(headers);
       const requiredValidation = validateRequiredHeaders(headers, leadsToExport);
-      const mobileHeaders = getMobileNumberHeaders(leadsToExport);
       const suggestions = getExportSuggestions(headers, leadsToExport);
       
       if (headerValidation.warnings.length > 0) {
@@ -2640,6 +2679,20 @@ export default function AllLeadsPage() {
                   >
                     Delete Selected ({selectedLeads.size})
                   </button>
+                  {isSessionVerified && (
+                    <span className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full flex items-center gap-1">
+                      🔓 Session Verified
+                    </span>
+                  )}
+                  {isSessionVerified && (
+                    <button
+                      onClick={clearSessionVerification}
+                      className="px-2 py-1 text-xs bg-gray-500 text-white rounded-md hover:bg-gray-600"
+                      title="Clear session verification"
+                    >
+                      Clear Session
+                    </button>
+                  )}
                   {hasDeletedLeads && (
                     <button
                       onClick={handleBulkRestoreClick}
@@ -2661,10 +2714,8 @@ export default function AllLeadsPage() {
             emptyMessage="No leads found in the system"
             editable={true}
             headerEditable={true}
-            onExportClick={handleExportExcel}
             onCellUpdate={handleCellUpdate}
             validationErrors={validationErrors}
-            onImportClick={() => fileInputRef.current?.click()}
             onColumnAdded={(column) => {
               // Handle column addition
               if (process.env.NODE_ENV === 'development') {
@@ -2729,6 +2780,20 @@ export default function AllLeadsPage() {
                 ? `You are about to permanently delete ${pendingDeleteOperation.leadIds?.length || 0} leads from the system. This action cannot be undone.`
                 : `You are about to permanently delete this lead from the system: ${pendingDeleteOperation?.lead?.clientName} - ${pendingDeleteOperation?.lead?.company}. This action cannot be undone.`
             }
+          />
+        </Suspense>
+      )}
+
+      {/* Export Password Protection Modal */}
+      {showExportPasswordModal && (
+        <Suspense fallback={<LoadingSpinner text="Loading..." />}>
+          <PasswordModal
+            isOpen={showExportPasswordModal}
+            onClose={() => setShowExportPasswordModal(false)}
+            operation="export"
+            onSuccess={handleExportPasswordSuccess}
+            title="Export All Leads"
+            description="You are about to export all leads data to an Excel file. This will include all lead information currently visible in the table."
           />
         </Suspense>
       )}

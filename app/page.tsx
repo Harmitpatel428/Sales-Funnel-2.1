@@ -1,12 +1,41 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCard3D } from './hooks/useCard3D';
+import { getEmployeeName, calculateWorkStats, getWorkSessions } from './utils/employeeStorage';
+import { useLeads } from './context/LeadContext';
 
 export default function HomePage() {
   const router = useRouter();
   const { cursorBlobRef } = useCard3D();
+  const { leads } = useLeads();
+  
+  // Get employee name and calculate today's work stats
+  const employeeName = getEmployeeName();
+  const today = new Date();
+  const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  
+  const workStats = useMemo(() => {
+    return calculateWorkStats(startOfDay, endOfDay, leads);
+  }, [leads, startOfDay, endOfDay]);
+  
+  const activeSessions = useMemo(() => {
+    if (!employeeName) return 0;
+    const sessions = getWorkSessions();
+    return sessions.filter(session => 
+      session.employeeName === employeeName && !session.endTime
+    ).length;
+  }, [employeeName]);
+  
+  // Helper function to format duration
+  const formatDuration = (minutes: number): string => {
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  };
 
   const handleGetStarted = () => {
     router.push('/add-lead?from=home');
@@ -68,6 +97,23 @@ export default function HomePage() {
 
 
           <button 
+            onClick={() => router.push('/work-tracker')}
+            className="card-3d bg-gray-900 rounded-xl shadow-md p-8 text-center border border-gray-700 hover:border-teal-500 hover:shadow-xl transition-all duration-200"
+          >
+            <div className="card-3d-content">
+              <div className="w-16 h-16 bg-teal-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2m0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+              </div>
+              <h3 className="text-xl font-bold text-white mb-3">Work Tracker</h3>
+              <p className="text-gray-300">
+                Track your activities, monitor time spent on leads, and generate work reports to share with management.
+              </p>
+            </div>
+          </button>
+
+          <button 
             onClick={() => router.push('/follow-up-mandate')}
             className="card-3d bg-gray-900 rounded-xl shadow-md p-8 text-center border border-gray-700 hover:border-green-500 hover:shadow-xl transition-all duration-200"
           >
@@ -119,19 +165,43 @@ export default function HomePage() {
           </button>
 
           <button 
-            onClick={() => router.push('/dashboard')}
-            className="card-3d bg-gray-900 rounded-xl shadow-md p-8 text-center border border-gray-700 hover:border-pink-500 hover:shadow-xl transition-all duration-200"
+            onClick={() => router.push('/work-tracker')}
+            className="card-3d bg-gray-900 rounded-xl shadow-md p-8 text-center border border-gray-700 hover:border-teal-500 hover:shadow-xl transition-all duration-200"
           >
             <div className="card-3d-content">
-              <div className="w-16 h-16 bg-pink-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-pink-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              <div className="w-16 h-16 bg-teal-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2m0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
               </div>
-              <h3 className="text-xl font-bold text-white mb-3">Success Tracking</h3>
-              <p className="text-gray-300">
-                Monitor your conversion rates and track the success of your lead management strategies.
-              </p>
+              <h3 className="text-xl font-bold text-white mb-2">My Work Today</h3>
+              {employeeName && (
+                <p className="text-sm text-teal-400 mb-4">{employeeName}</p>
+              )}
+              
+              {/* Work Stats Grid */}
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div className="bg-gray-800 rounded-lg p-3">
+                  <div className="text-xs text-gray-400 mb-1">Activities</div>
+                  <div className="text-lg font-bold text-teal-400">{workStats.totalActivities}</div>
+                </div>
+                <div className="bg-gray-800 rounded-lg p-3">
+                  <div className="text-xs text-gray-400 mb-1">Leads</div>
+                  <div className="text-lg font-bold text-teal-400">{workStats.totalLeadsTouched}</div>
+                </div>
+                <div className="bg-gray-800 rounded-lg p-3">
+                  <div className="text-xs text-gray-400 mb-1">Time</div>
+                  <div className="text-lg font-bold text-teal-400">{formatDuration(workStats.totalTimeSpent)}</div>
+                </div>
+                <div className="bg-gray-800 rounded-lg p-3">
+                  <div className="text-xs text-gray-400 mb-1">Active</div>
+                  <div className="text-lg font-bold text-teal-400">{activeSessions}</div>
+                </div>
+              </div>
+              
+              <div className="text-sm text-teal-400 hover:text-teal-300 transition-colors">
+                View Full Report →
+              </div>
             </div>
           </button>
 

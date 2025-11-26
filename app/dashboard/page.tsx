@@ -18,9 +18,14 @@ import { validateLeadField } from '../hooks/useValidation';
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { leads, deleteLead, getFilteredLeads, updateLead } = useLeads();
-  const { discomFilter, setDiscomFilter, setOnExportClick } = useNavigation();
+  const { leads, deleteLead, getFilteredLeads, updateLead, addActivity } = useLeads();
+  const { setOnExportClick } = useNavigation();
   const { getVisibleColumns } = useColumns();
+  
+  // Helper function to extract digits from a string
+  const extractDigits = (str: string | undefined | null): string => {
+    return str ? str.replace(/[^0-9]/g, '') : '';
+  };
   const [activeFilters, setActiveFilters] = useState<LeadFilters>({});
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showLeadModal, setShowLeadModal] = useState(false);
@@ -44,6 +49,7 @@ export default function DashboardPage() {
   const [passwordSettingsOpen, setPasswordSettingsOpen] = useState(false);
   const [validationErrors, setValidationErrors] = useState<Record<string, Record<string, string>>>({});
   const [columnCount, setColumnCount] = useState(0);
+  const [highlightedLeadId, setHighlightedLeadId] = useState<string | null>(null);
   
   // Drag and drop state for status buttons
   const [draggedItem, setDraggedItem] = useState<string | null>(null);
@@ -54,8 +60,8 @@ export default function DashboardPage() {
 
   // Create a stable reference for activeFilters to prevent infinite loops
   const activeFiltersKey = useMemo(() => {
-    return `${activeFilters.status?.join(',') || 'none'}-${activeFilters.searchTerm || 'none'}-${activeFilters.discom || 'none'}`;
-  }, [activeFilters.status, activeFilters.searchTerm, activeFilters.discom]);
+    return `${activeFilters.status?.join(',') || 'none'}-${activeFilters.searchTerm || 'none'}`;
+  }, [activeFilters.status, activeFilters.searchTerm]);
 
   // Show toast notification
   const showToastNotification = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -129,15 +135,35 @@ export default function DashboardPage() {
       }
 
       // Update the lead with proper field access using safe property assignment
-      const updatedLead = {
+      let updatedLead = {
         ...lead,
         [field]: formattedValue,
         lastActivityDate: new Date().toLocaleDateString('en-GB') // DD-MM-YYYY format
       } as Lead & Record<string, any>; // Allow dynamic properties
 
+      // Clear follow-up date when status changes to "Work Alloted"
+      if (field === 'status' && value === 'Work Alloted') {
+        updatedLead = { ...updatedLead, followUpDate: '' };
+      }
+
       // Only touch activity for important field changes
       const shouldTouchActivity = ['status', 'followUpDate', 'notes'].includes(field);
-      updateLead(updatedLead, { touchActivity: shouldTouchActivity });
+      await updateLead(updatedLead, { touchActivity: shouldTouchActivity });
+      
+      // Auto-log status changes
+      if (field === 'status') {
+        const oldStatus = lead.status;
+        addActivity(leadId, `Status changed from ${oldStatus} to ${value}`, {
+          activityType: 'status_change',
+          metadata: { oldStatus, newStatus: value }
+        });
+
+        if (value === 'Work Alloted') {
+          showToastNotification('Status changed to WAO. Follow-up date has been automatically cleared.', 'info');
+          return; // Prevent generic success toast
+        }
+      }
+      
       showToastNotification('Lead updated successfully!', 'success');
     } catch (error) {
       console.error('Error updating cell:', error);
@@ -182,7 +208,9 @@ export default function DashboardPage() {
       }
       
       // Force re-render by updating a dummy state
-      showToastNotification(`Table updated with ${currentColumnCount} columns`, 'info');
+      if (process.env.NODE_ENV === 'development') {
+        console.log('🔄 Table re-mounted with', currentColumnCount, 'columns');
+      }
       
       // Clear any validation errors that might be stale
       setValidationErrors({});
@@ -238,15 +266,6 @@ export default function DashboardPage() {
     setOnExportClick(() => handleExportExcel);
   }, [setOnExportClick]);
 
-  // Handle discom filter changes
-  useEffect(() => {
-    setActiveFilters(prev => {
-      const next: LeadFilters = { ...prev };
-      if (!discomFilter) delete next.discom; else next.discom = discomFilter;
-      return next;
-    });
-  }, [discomFilter]);
-
   // Check for updated leads and clear main dashboard view if needed
   useEffect(() => {
     // Check if there are any leads marked as updated
@@ -270,6 +289,7 @@ export default function DashboardPage() {
         if (showLeadModal) {
           setShowLeadModal(false);
           document.body.style.overflow = 'unset';
+          // Keep highlightedLeadId intact for highlighting after modal closes
         }
         if (showDeleteModal) {
           setShowDeleteModal(false);
@@ -283,6 +303,10 @@ export default function DashboardPage() {
         }
         if (showExportPasswordModal) {
         setShowExportPasswordModal(false);
+          document.body.style.overflow = 'unset';
+        }
+        if (passwordSettingsOpen) {
+          setPasswordSettingsOpen(false);
           document.body.style.overflow = 'unset';
         }
       }
@@ -317,6 +341,30 @@ export default function DashboardPage() {
       window.history.replaceState({}, '', newUrl.toString());
     }
   }, [leads]);
+
+  // Restore filter state from localStorage on component mount
+  useEffect(() => {
+    try {
+      const savedFilterState = localStorage.getItem('dashboardFilterState');
+      if (savedFilterState) {
+        const parsedStatus = JSON.parse(savedFilterState);
+        if (Array.isArray(parsedStatus)) {
+          setActiveFilters(prev => (!Array.isArray(prev.status) || prev.status.length === 0)
+            ? { ...prev, status: parsedStatus }
+            : prev);
+          if (process.env.NODE_ENV === 'development') {
+            console.log('🔄 Restored filter state:', parsedStatus);
+          }
+          // Clean up after restoration
+          localStorage.removeItem('dashboardFilterState');
+        }
+      }
+    } catch (error) {
+      console.error('Error restoring filter state:', error);
+      // Clean up corrupted data
+      localStorage.removeItem('dashboardFilterState');
+    }
+  }, []);
   
   // Helper function to parse DD-MM-YYYY format dates
   const parseFollowUpDate = (dateString: string): Date | null => {
@@ -436,49 +484,8 @@ export default function DashboardPage() {
     const tempFilters = { ...activeFilters };
     delete tempFilters.status; // Remove status filter to count all statuses
     
-    // Get filtered leads (excluding status filter)
-    const filteredLeadsForCounts = leads.filter(lead => {
-      // Apply all filters except status
-      if (lead.isDone || lead.isDeleted) return false;
-      
-      // Apply discom filter if active
-      if (tempFilters.discom && tempFilters.discom !== '') {
-        const leadDiscom = String(lead.discom || '').trim().toUpperCase();
-        const filterDiscom = String(tempFilters.discom).trim().toUpperCase();
-        if (leadDiscom !== filterDiscom) return false;
-      }
-      
-      // Apply follow-up date filters if active
-      if (tempFilters.followUpDateStart && lead.followUpDate < tempFilters.followUpDateStart) return false;
-      if (tempFilters.followUpDateEnd && lead.followUpDate > tempFilters.followUpDateEnd) return false;
-      
-      // Apply search filter if active
-      if (tempFilters.searchTerm) {
-        const searchTerm = tempFilters.searchTerm.toLowerCase();
-        const searchableText = [
-          lead.kva,
-          lead.clientName,
-          lead.company,
-          lead.mobileNumber,
-          lead.consumerNumber,
-          lead.notes
-        ].join(' ').toLowerCase();
-        
-        if (/^\d+$/.test(tempFilters.searchTerm)) {
-          // Phone number search
-          const allMobileNumbers = [
-            lead.mobileNumber,
-            ...(lead.mobileNumbers || []).map(m => m.number)
-          ].filter((num): num is string => Boolean(num)); // Type guard to ensure only strings
-          if (!allMobileNumbers.some(num => num.includes(tempFilters.searchTerm!))) return false;
-        } else {
-          // Text search
-          if (!searchableText.includes(searchTerm)) return false;
-        }
-      }
-      
-      return true;
-    });
+    // Use getFilteredLeads to ensure same search semantics
+    const filteredLeadsForCounts = getFilteredLeads(tempFilters);
     
     if (process.env.NODE_ENV === 'development') {
       console.log('Filtered leads for status counts:', filteredLeadsForCounts.length);
@@ -508,7 +515,7 @@ export default function DashboardPage() {
     }
 
     return counts;
-  }, [leads, activeFilters, columnCount]);
+  }, [leads, activeFilters, getFilteredLeads]);
 
 
   const { dueToday, upcoming, overdue, followUpMandate } = summaryStats;
@@ -519,6 +526,7 @@ export default function DashboardPage() {
   const handleLeadClick = (lead: Lead) => {
     setSelectedLead(lead);
     setShowLeadModal(true);
+    setHighlightedLeadId(lead.id); // Mark this lead for highlighting when modal closes
     // Prevent body scrolling when modal is open
     document.body.style.overflow = 'hidden';
   };
@@ -686,14 +694,15 @@ export default function DashboardPage() {
 
     const queryLower = query.toLowerCase();
     const queryNumbers = query.replace(/[^0-9]/g, ''); // Extract numbers for phone/consumer number search
+    const visibleColumns = getVisibleColumns();
 
     const suggestions = leads.filter(lead => {
       // Search in KVA
-      const kvaMatch = lead.kva.toLowerCase().includes(queryLower);
+      const kvaMatch = lead.kva?.toLowerCase().includes(queryLower) || false;
       
       // Search in Consumer Number (both original and cleaned)
-      const consumerMatch = lead.consumerNumber.toLowerCase().includes(queryLower) || 
-                           lead.consumerNumber.replace(/[^0-9]/g, '').includes(queryNumbers);
+      const consumerMatch = lead.consumerNumber?.toLowerCase().includes(queryLower) || 
+                           extractDigits(lead.consumerNumber).includes(queryNumbers) || false;
       
       // Search in Mobile Numbers (both original and cleaned)
       const allMobileNumbers = [
@@ -713,23 +722,52 @@ export default function DashboardPage() {
       );
       
       // Search in Company Name
-      const companyMatch = lead.company.toLowerCase().includes(queryLower);
+      const companyMatch = lead.company?.toLowerCase().includes(queryLower) || false;
       
       // Search in Address
-      const locationMatch = lead.companyLocation?.toLowerCase().includes(queryLower);
+      const locationMatch = lead.companyLocation?.toLowerCase().includes(queryLower) || false;
       
       // Search in Client Name
-      const clientMatch = lead.clientName.toLowerCase().includes(queryLower);
+      const clientMatch = lead.clientName?.toLowerCase().includes(queryLower) || false;
       
       // Search in Connection Date
-      const dateMatch = lead.connectionDate.toLowerCase().includes(queryLower);
+      const dateMatch = lead.connectionDate?.toLowerCase().includes(queryLower) || false;
       
-      return kvaMatch || consumerMatch || mobileMatch || mobileNameMatch || companyMatch || locationMatch || clientMatch || dateMatch;
+      // Dynamic search through all visible columns
+      const dynamicMatch = visibleColumns.some(column => {
+        const value = (lead as any)[column.fieldKey];
+        if (value === null || value === undefined) return false;
+        
+        // Handle different column types appropriately
+        switch (column.type) {
+          case 'phone':
+            // For phone columns, search both original and cleaned versions
+            const phoneStr = String(value);
+            return phoneStr.toLowerCase().includes(queryLower) || 
+                   phoneStr.replace(/[^0-9]/g, '').includes(queryNumbers);
+          case 'number':
+            // For number columns, search both original and string versions
+            return String(value).toLowerCase().includes(queryLower);
+          case 'date':
+            // For date columns, search the formatted date string
+            return String(value).toLowerCase().includes(queryLower);
+          case 'select':
+            // For select columns, search the selected value
+            return String(value).toLowerCase().includes(queryLower);
+          case 'email':
+          case 'text':
+          default:
+            // For text/email columns, direct string comparison
+            return String(value).toLowerCase().includes(queryLower);
+        }
+      });
+      
+      return kvaMatch || consumerMatch || mobileMatch || mobileNameMatch || companyMatch || locationMatch || clientMatch || dateMatch || dynamicMatch;
     }).slice(0, 8); // Show more suggestions
 
     setSearchSuggestions(suggestions);
     setShowSuggestions(suggestions.length > 0);
-  }, [leads]);
+  }, [leads, getVisibleColumns]);
 
   // Search input change handler
   const handleSearchInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -762,7 +800,7 @@ export default function DashboardPage() {
     
     let searchValue = lead.kva; // Default to KVA
     
-    if (lead.consumerNumber.toLowerCase().includes(queryLower) || lead.consumerNumber.replace(/[^0-9]/g, '').includes(queryNumbers)) {
+    if (lead.consumerNumber.toLowerCase().includes(queryLower) || extractDigits(lead.consumerNumber).includes(queryNumbers)) {
       searchValue = lead.consumerNumber;
     } else if (allMobileNumbers.some(mobileNumber => 
       mobileNumber?.toLowerCase().includes(queryLower) || 
@@ -804,7 +842,6 @@ export default function DashboardPage() {
   // Clear all filters
   const clearAllFilters = () => {
     setSearchInput('');
-    setDiscomFilter('');
     setActiveFilters({}); // Clear all filters to show all leads
     setSelectedLeads(new Set());
     setSelectAll(false);
@@ -1045,6 +1082,12 @@ export default function DashboardPage() {
       sourcePage: 'dashboard',
       leadId: lead.id
     }));
+    // Store current filter state to restore after editing
+    if (Array.isArray(activeFilters.status) && activeFilters.status.length > 0) {
+      localStorage.setItem('dashboardFilterState', JSON.stringify(activeFilters.status));
+    } else {
+      localStorage.removeItem('dashboardFilterState');
+    }
     // Navigate to add-lead page with a flag to indicate we're editing
     router.push(`/add-lead?mode=edit&id=${lead.id}&from=dashboard`);
   };
@@ -1118,8 +1161,8 @@ export default function DashboardPage() {
                     const queryNumbers = searchInput.replace(/[^0-9]/g, '');
                     
                     const getMatchType = () => {
-                      if (lead.kva.toLowerCase().includes(queryLower)) return 'KVA';
-                      if (lead.consumerNumber.toLowerCase().includes(queryLower) || lead.consumerNumber.replace(/[^0-9]/g, '').includes(queryNumbers)) return 'Consumer No.';
+                      if (lead.kva?.toLowerCase().includes(queryLower)) return 'KVA';
+                      if (lead.consumerNumber?.toLowerCase().includes(queryLower) || extractDigits(lead.consumerNumber).includes(queryNumbers)) return 'Consumer No.';
                       
                       // Check all mobile numbers
                       const allMobileNumbers = [
@@ -1138,10 +1181,10 @@ export default function DashboardPage() {
                         mobileName?.toLowerCase().includes(queryLower)
                       )) return 'Contact';
                       
-                      if (lead.company.toLowerCase().includes(queryLower)) return 'Company';
+                      if (lead.company?.toLowerCase().includes(queryLower)) return 'Company';
                       if (lead.companyLocation?.toLowerCase().includes(queryLower)) return 'Address';
-                      if (lead.clientName.toLowerCase().includes(queryLower)) return 'Client';
-                      if (lead.connectionDate.toLowerCase().includes(queryLower)) return 'Date';
+                      if (lead.clientName?.toLowerCase().includes(queryLower)) return 'Client';
+                      if (lead.connectionDate?.toLowerCase().includes(queryLower)) return 'Date';
                       return 'Match';
                     };
 
@@ -1357,6 +1400,7 @@ export default function DashboardPage() {
             validationErrors={validationErrors}
             onExportClick={handleExportExcel}
             headerEditable={true}
+            highlightedLeadId={highlightedLeadId}
             onColumnAdded={(column) => {
               // Handle column addition
               if (process.env.NODE_ENV === 'development') {
@@ -1401,13 +1445,11 @@ export default function DashboardPage() {
             onClose={() => {
               setShowLeadModal(false);
               document.body.style.overflow = 'unset';
+              // Keep highlightedLeadId set and clear it after 3 seconds
+              setTimeout(() => setHighlightedLeadId(null), 3000);
             }}
             lead={selectedLead!}
             onEdit={handleEditLead}
-            onDelete={(lead) => {
-              setLeadToDelete(lead);
-              setShowDeleteModal(true);
-            }}
           />
         </Suspense>
       )}
@@ -1603,6 +1645,7 @@ export default function DashboardPage() {
         </Suspense>
       )}
 
+
       {/* Password Settings Modal */}
       {passwordSettingsOpen && (
         <Suspense fallback={<LoadingSpinner text="Loading..." />}>
@@ -1615,6 +1658,7 @@ export default function DashboardPage() {
           />
         </Suspense>
       )}
+
 
       {/* Toast Notification */}
       {showToast && (

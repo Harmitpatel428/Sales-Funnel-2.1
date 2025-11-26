@@ -19,7 +19,6 @@ export interface TemplateManagerHook {
   renameTemplate: (id: string, newName: string) => boolean;
   updateTemplateContent: (id: string, content: Template['content']) => void;
   getTemplateById: (id: string) => Template | null;
-  migrateOldTemplates: () => void;
 }
 
 const TEMPLATES_STORAGE_KEY = 'quickBenefitTemplates';
@@ -34,7 +33,80 @@ export const useTemplates = (): TemplateManagerHook => {
     if (typeof window === 'undefined') return;
 
     try {
-      // Load templates
+      // First, migrate old templates before creating defaults
+      const migrationFlag = localStorage.getItem('templates_migrated');
+      if (migrationFlag !== 'true') {
+        const oldTemplates: Template[] = [];
+        const oldCategories = ['general', 'category1', 'category2', 'category3'];
+
+        oldCategories.forEach((category, index) => {
+          try {
+            const saved = localStorage.getItem(`quickBenefitTemplate_${category}`);
+            if (saved) {
+              const parsed = JSON.parse(saved);
+              const template: Template = {
+                id: `migrated_${category}`,
+                name: category === 'general' ? 'General Template' : `Category ${index}`,
+                content: parsed
+              };
+              oldTemplates.push(template);
+            }
+          } catch (error) {
+            console.warn(`Error migrating template for ${category}:`, error);
+          }
+        });
+
+        if (oldTemplates.length > 0) {
+          // Load existing templates first
+          const savedTemplates = localStorage.getItem(TEMPLATES_STORAGE_KEY);
+          let existingTemplates: Template[] = [];
+          
+          if (savedTemplates) {
+            existingTemplates = JSON.parse(savedTemplates);
+          }
+
+          let hasChanges = false;
+          const updated = [...existingTemplates];
+          
+          // Map migrated IDs to canonical default IDs
+          const idMapping: Record<string, string> = {
+            'migrated_general': 'general',
+            'migrated_category1': 'category1', 
+            'migrated_category2': 'category2',
+            'migrated_category3': 'category3'
+          };
+
+          oldTemplates.forEach(oldTemplate => {
+            const canonicalId = idMapping[oldTemplate.id];
+            if (canonicalId) {
+              const existingIndex = updated.findIndex(t => t.id === canonicalId);
+              if (existingIndex !== -1) {
+                // Merge content into existing default template
+                updated[existingIndex] = {
+                  ...updated[existingIndex],
+                  content: oldTemplate.content
+                };
+                hasChanges = true;
+              } else {
+                // Add as new template if canonical doesn't exist
+                updated.push({
+                  ...oldTemplate,
+                  id: canonicalId
+                });
+                hasChanges = true;
+              }
+            }
+          });
+          
+          if (hasChanges) {
+            localStorage.setItem(TEMPLATES_STORAGE_KEY, JSON.stringify(updated));
+            // Mark migration as completed only if changes were applied
+            localStorage.setItem('templates_migrated', 'true');
+          }
+        }
+      }
+
+      // Load templates after migration
       const savedTemplates = localStorage.getItem(TEMPLATES_STORAGE_KEY);
       let parsedTemplates: Template[] = [];
       
@@ -53,7 +125,7 @@ export const useTemplates = (): TemplateManagerHook => {
       const savedActiveId = localStorage.getItem(ACTIVE_TEMPLATE_KEY);
       const activeId = savedActiveId;
 
-      // If no templates exist, create default ones
+      // If no templates exist after migration, create default ones
       if (parsedTemplates.length === 0) {
         parsedTemplates = createDefaultTemplates();
         setTemplates(parsedTemplates);
@@ -82,10 +154,27 @@ export const useTemplates = (): TemplateManagerHook => {
     }
   }, []);
 
+  // Persist active template ID changes
+  useEffect(() => {
+    if (activeTemplateId) {
+      localStorage.setItem(ACTIVE_TEMPLATE_KEY, activeTemplateId);
+    }
+  }, [activeTemplateId]);
+
   const createTemplate = useCallback((name: string): string => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return '';
+
+    // Check if name already exists
+    const existingTemplate = templates.find(t => t.name === trimmedName);
+    if (existingTemplate) {
+      alert('A template with this name already exists.');
+      return existingTemplate.id; // Return existing ID instead of creating duplicate
+    }
+
     const newTemplate: Template = {
       id: `template_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      name: name.trim(),
+      name: trimmedName,
       content: {
         overview: ''
       }
@@ -186,52 +275,6 @@ export const useTemplates = (): TemplateManagerHook => {
     return templates.find(t => t.id === id) || null;
   }, [templates]);
 
-  const migrateOldTemplates = useCallback(() => {
-    if (typeof window === 'undefined') return;
-
-    // Check if migration has already been done
-    const migrationFlag = localStorage.getItem('templates_migrated');
-    if (migrationFlag === 'true') return;
-
-    const oldTemplates: Template[] = [];
-    const oldCategories = ['general', 'category1', 'category2', 'category3'];
-
-    oldCategories.forEach((category, index) => {
-      try {
-        const saved = localStorage.getItem(`quickBenefitTemplate_${category}`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          const template: Template = {
-            id: `migrated_${category}`,
-            name: category === 'general' ? 'General Template' : `Category ${index}`,
-            content: parsed
-          };
-          oldTemplates.push(template);
-        }
-      } catch (error) {
-        console.warn(`Error migrating template for ${category}:`, error);
-      }
-    });
-
-    if (oldTemplates.length > 0) {
-      setTemplates(prev => {
-        // Filter out any existing migrated templates by both ID and name to prevent duplicates
-        const existingIds = prev.map(t => t.id);
-        const existingNames = prev.map(t => t.name);
-        const newTemplates = oldTemplates.filter(t => 
-          !existingIds.includes(t.id) && !existingNames.includes(t.name)
-        );
-        const updated = [...prev, ...newTemplates];
-        
-        localStorage.setItem(TEMPLATES_STORAGE_KEY, JSON.stringify(updated));
-        return updated;
-      });
-      
-      // Mark migration as completed
-      localStorage.setItem('templates_migrated', 'true');
-    }
-  }, []);
-
   return {
     templates,
     activeTemplateId,
@@ -240,8 +283,7 @@ export const useTemplates = (): TemplateManagerHook => {
     deleteTemplate,
     renameTemplate,
     updateTemplateContent,
-    getTemplateById,
-    migrateOldTemplates
+    getTemplateById
   };
 };
 

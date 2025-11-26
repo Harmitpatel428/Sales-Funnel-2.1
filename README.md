@@ -32,12 +32,13 @@ This package contains the complete Enterprise Lead Management System with profes
 1. **Extract** this ZIP file to desired location
 2. **Navigate** to the `dist/` folder
 3. **Double-click** `Enterprise Lead Management System Setup 2.0.0.exe`
-4. **Follow** the installation wizard
+4. **Wait** for installation to complete (automatic)
 5. **Launch** from desktop shortcut or Start Menu
 
+**Note:** You may be asked to accept the license agreement before installation begins.
+
 ### **What the Installer Does:**
-- ✅ Installs Node.js automatically if missing
-- ✅ Installs all required dependencies
+- ✅ Installs in seconds with optimized compression for low-end systems
 - ✅ Creates desktop shortcut
 - ✅ Adds to Start Menu
 - ✅ Creates uninstaller
@@ -104,11 +105,66 @@ If you see "no-inline-styles" warnings in VS Code's Problems panel from Microsof
 - **OS**: Windows 10 or later
 - **RAM**: 4GB minimum, 8GB recommended
 - **Storage**: 500MB available disk space
-- **Network**: Internet connection for initial setup
+- **Network**: No internet required (fully offline after installation)
+
+---
+
+## 🔧 **INSTALLER CONFIGURATION**
+
+### **Optimized for Low-End Systems**
+- LZMA compression with 4MB dictionary (faster decompression on slow CPUs)
+- Non-solid compression (avoids large temp files on HDDs)
+- Normal compression level (optimal balance of size and speed)
+- Per-user installation (no admin rights required, no UAC prompts)
+
+### **Professional Features**
+- One-click installation (minimal user interaction)
+- License agreement display
+- Custom branding with application icons
+- Desktop and Start Menu shortcuts
+- Automatic launch after installation
+- Clean uninstallation with data preservation option
+
+### **Build Resources**
+The `build/` directory contains:
+- `icon.ico` - Application window icon (multi-resolution)
+- `installerIcon.ico` - Installer executable icon
+- `installerHeaderIcon.ico` - Installer window header icon
+- `installer.nsh` - NSIS customization for low-end systems
+- `license.txt` - End User License Agreement
+
+### **Building the Installer**
+Run `npm run package:client` to create the complete delivery package with installer and documentation.
 
 ---
 
 ## 🔧 **TROUBLESHOOTING**
+
+### Installer Issues
+
+**Problem:** "Windows protected your PC" SmartScreen warning appears.
+
+**Solution:** This is normal for new applications without a code signing certificate.
+1. Click "More info"
+2. Click "Run anyway"
+3. The application is safe to install
+
+**Problem:** Installation fails or hangs.
+
+**Solution:**
+1. Ensure you have at least 500MB free disk space
+2. Close other applications to free up RAM
+3. Temporarily disable antivirus software
+4. Run the installer again
+5. Check Windows Event Viewer for detailed error messages
+
+**Problem:** Application won't start after installation.
+
+**Solution:**
+1. Check that your system meets minimum requirements (Windows 10+, 4GB RAM)
+2. Try running as administrator (right-click → Run as administrator)
+3. Check for antivirus blocking the application
+4. Reinstall the application
 
 ### Excel Import/Export Issues
 
@@ -252,6 +308,155 @@ The Enterprise Lead Management System v2.0 is a complete, professional-grade CRM
 ---
 
 ## 🔧 **DEVELOPMENT**
+
+### **Building the Installer**
+
+**Prerequisites:**
+- Node.js 18+ installed
+- All dependencies installed: `npm install`
+- All build resources present in `build/` directory:
+  * icon.ico (application icon)
+  * installerIcon.ico (installer executable icon)
+  * installerHeaderIcon.ico (installer window header icon)
+  * license.txt (End User License Agreement)
+  * installer.nsh (NSIS customization for low-end systems)
+- All documentation files present at project root:
+  * CLIENT_INSTALLATION_GUIDE.md
+  * LAUNCH_INSTRUCTIONS.md
+  * PERFORMANCE_OPTIMIZATION.md
+  * README.txt
+
+**Build Commands:**
+
+**Complete Build with Validation:**
+```bash
+npm run package:client
+```
+This command runs the comprehensive build pipeline:
+1. ✅ Validates all required resources (icons, docs, NSIS files)
+2. ✅ Validates dependencies and directory structure
+3. 🧹 Cleans previous builds (dist/, out/, .next/)
+4. 🔍 Runs type checking (optional, non-blocking)
+5. 📦 Builds Next.js static export
+6. 🖥️ Packages Electron installer for Windows
+7. 📋 Creates delivery package with installer and documentation
+8. 📊 Generates build reports and checksums
+9. ✅ Runs post-build verification
+
+**Quick Build (Alias):**
+```bash
+npm run build:installer
+```
+Alias for `package:client` - same functionality.
+
+**Manual Build Steps (Advanced):**
+```bash
+# Clean previous builds
+npm run clean:win
+
+# Build Next.js application
+npm run build:prod
+
+# Build Electron installer only
+npm run build-electron:win
+```
+
+**Post-Build Verification:**
+```bash
+npm run verify:build
+```
+Runs comprehensive verification checks:
+- ✅ Installer exists and is valid
+- ✅ Installer size is within expected range
+- ✅ Installer integrity (SHA256 checksum)
+- ✅ All delivery package files present
+- ✅ Package manifest matches actual files
+- ✅ Build configuration is correct
+
+**Build Output:**
+
+After successful build, you'll find:
+
+**dist/ directory:**
+- `Enterprise Lead Management System Setup 2.0.0.exe` (~150 MB)
+- Build artifacts and metadata
+
+**delivery/ directory (ready for client delivery):**
+- `Enterprise Lead Management System Setup 2.0.0.exe` (installer)
+- `CLIENT_INSTALLATION_GUIDE.md` (installation instructions)
+- `LAUNCH_INSTRUCTIONS.md` (usage guide)
+- `PERFORMANCE_OPTIMIZATION.md` (performance tips)
+- `README.txt` (quick reference)
+- `PACKAGE_CONTENTS.txt` (manifest with checksums)
+- `BUILD_INFO.txt` (build metadata)
+- `VERIFICATION_REPORT.txt` (verification results)
+- `build-log.txt` (detailed build log)
+
+**Build Duration:**
+- Clean build: 3-5 minutes (depending on system)
+- Incremental build: 2-3 minutes
+- Verification: 10-30 seconds
+
+**Troubleshooting Build Issues:**
+
+**Problem: "Required build resource not found"**
+- Solution: Ensure all files in `build/` directory exist
+- Run validation: `node scripts/package-for-client.js` (will list missing files)
+- Create missing files following the templates in previous implementation phases
+
+**Problem: "Documentation file not found"**
+- Solution: Create missing documentation files at project root
+- Refer to previous implementation phases for content templates
+- Minimum file size: 500 bytes (scripts will warn if too small)
+
+**Problem: "Build failed during Next.js compilation"**
+- Solution: Check for TypeScript errors: `npm run type-check`
+- Clear cache: `npm run clean:win`
+- Reinstall dependencies: `rm -rf node_modules && npm install`
+- Check console output for specific error messages
+
+**Problem: "Electron Builder failed"**
+- Solution: Verify Next.js build completed (check `out/` directory exists)
+- Ensure `out/index.html` exists
+- Check disk space (need ~500 MB free)
+- Review electron-builder logs in console output
+
+**Problem: "Installer not found in dist/ directory"**
+- Solution: Check for build errors in console output
+- Verify electron-builder completed successfully
+- Check dist/ directory manually for any .exe files
+- Review build-log.txt in delivery/ directory
+
+**Problem: "Verification failed"**
+- Solution: Review VERIFICATION_REPORT.txt in delivery/ directory
+- Check specific failed checks and follow recommendations
+- Rebuild if installer is corrupted: `npm run clean:win && npm run package:client`
+
+**Build Script Features:**
+
+**Graceful Error Handling:**
+- Clear error messages with context
+- Actionable recovery suggestions
+- Automatic cleanup of partial builds on failure
+- Non-blocking warnings for optional steps
+
+**Comprehensive Validation:**
+- Pre-build: Validates all resources before starting
+- During build: Monitors each step for errors
+- Post-build: Verifies installer integrity and completeness
+
+**Detailed Reporting:**
+- Real-time console output with progress indicators
+- Detailed build log saved to delivery/build-log.txt
+- Package manifest with SHA256 checksums
+- Build info with version and configuration details
+- Verification report with pass/fail status
+
+**Recovery Mechanisms:**
+- Missing resources: Provides templates or examples
+- Build failures: Suggests cleanup and retry steps
+- Disk space issues: Calculates required space
+- Permission errors: Suggests running with appropriate rights
 
 ### **Debug Logging**
 - Console.log statements are visible in development mode only

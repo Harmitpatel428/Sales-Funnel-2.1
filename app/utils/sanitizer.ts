@@ -174,5 +174,64 @@ export function sanitizeObject(obj: Record<string, any>): Record<string, any> {
     }
   }
   
+/**
+ * Sanitize column configuration object
+ * @param config - Column configuration to sanitize
+ * @returns Sanitized column configuration
+ */
+export function sanitizeColumnConfig(config: any): any {
+  if (!config || typeof config !== 'object') {
+    return config;
+  }
+
+  const sanitized = { ...config };
+
+  // Sanitize string fields
+  if (sanitized.id) {
+    sanitized.id = sanitizeText(sanitized.id);
+  }
+  if (sanitized.fieldKey) {
+    sanitized.fieldKey = sanitizeText(sanitized.fieldKey);
+  }
+  if (sanitized.label) {
+    sanitized.label = sanitizeText(sanitized.label);
+  }
+  if (sanitized.description) {
+    sanitized.description = sanitizeText(sanitized.description);
+  }
+  if (sanitized.defaultValue) {
+    sanitized.defaultValue = sanitizeText(sanitized.defaultValue);
+  }
+
+  // Sanitize options array
+  if (Array.isArray(sanitized.options)) {
+    sanitized.options = sanitized.options.map((option: any) => 
+      typeof option === 'string' ? sanitizeText(option) : option
+    );
+  }
+
+  return sanitized;
+}
+
+/**
+ * Sanitize header configuration object
+ * @param config - Header configuration to sanitize
+ * @returns Sanitized header configuration
+ */
+export function sanitizeHeaderConfig(config: any): any {
+  if (!config || typeof config !== 'object') {
+    return config;
+  }
+
+  const sanitized = { ...config };
+
+  // Sanitize string fields
+  if (sanitized.title) {
+    sanitized.title = sanitizeText(sanitized.title);
+  }
+  if (sanitized.subtitle) {
+    sanitized.subtitle = sanitizeText(sanitized.subtitle);
+  }
+
   return sanitized;
 }

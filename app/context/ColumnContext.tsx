@@ -118,6 +118,17 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
     width: 150,
     visible: true,
     description: 'Follow up date'
+  },
+  {
+    id: 'termLoan',
+    fieldKey: 'termLoan',
+    label: 'Term Loan',
+    type: 'text',
+    required: false,
+    sortable: true,
+    width: 120,
+    visible: true,
+    description: 'Term loan duration or amount'
   }
 ];
 
@@ -136,6 +147,24 @@ export const ColumnProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       try {
         const parsed = JSON.parse(savedColumns);
         setColumns(parsed);
+        
+        // Check if termLoan column is missing and add it
+        const hasTermLoan = parsed.some((col: ColumnConfig) => col.fieldKey === 'termLoan');
+        if (!hasTermLoan) {
+          const termLoanColumn = DEFAULT_COLUMNS.find(col => col.fieldKey === 'termLoan');
+          if (termLoanColumn) {
+            const mergedColumns = [...parsed, termLoanColumn];
+            setColumns(mergedColumns);
+            localStorage.setItem('leadColumnConfig', JSON.stringify(mergedColumns));
+            
+            // Migrate existing leads for the new column
+            try {
+              leadsCtx.migrateLeadsForNewColumn(termLoanColumn);
+            } catch (error) {
+              console.error('Error migrating leads for termLoan column:', error);
+            }
+          }
+        }
       } catch (error) {
         console.error('Error loading column config:', error);
       }

@@ -129,7 +129,7 @@ export function validateFieldValue(value: FieldValue, columnType: ColumnConfig['
  */
 export function coerceFieldValue(value: unknown, columnType: ColumnConfig['type']): FieldValue {
   if (value === null || value === undefined) {
-    return value;
+    return null;
   }
 
   try {

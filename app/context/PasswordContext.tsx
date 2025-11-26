@@ -26,11 +26,11 @@ export interface PasswordContextType {
 
 // Default passwords
 const DEFAULT_PASSWORDS: PasswordConfig = {
-  editMode: 'edit123',
-  headerEdit: 'header123',
+  editMode: 'admin123',
+  headerEdit: 'admin123',
   export: 'admin123',
-  columnManagement: 'column123',
-  rowManagement: 'row123'
+  columnManagement: 'admin123',
+  rowManagement: 'admin123'
 };
 
 // Password hints

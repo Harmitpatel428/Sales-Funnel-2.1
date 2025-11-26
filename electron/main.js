@@ -1,84 +1,105 @@
 const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
+const url = require('url');
 const express = require('express');
-const isDev = process.env.NODE_ENV === 'development';
 
+// Global variables
 let mainWindow;
 let server;
+let port = 3000;
 
-function startLocalServer() {
+// Express server setup for production
+function createServer() {
   const expressApp = express();
-  const PORT = 3001;
   
-  // Serve static files from the out directory
-  expressApp.use(express.static(path.join(__dirname, '../out')));
+  // Serve static files from the packaged app
+  const staticPath = path.join(process.resourcesPath, 'app');
+  expressApp.use(express.static(staticPath));
   
-  // Handle all routes by serving index.html
+  // Fallback route for client-side routing
   expressApp.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../out/index.html'));
+    res.sendFile(path.join(staticPath, 'index.html'));
   });
   
-  // Start the server
-  server = expressApp.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  // Start server
+  server = expressApp.listen(port, () => {
+    console.log(`Express server running on port ${port}`);
+  });
+  
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`Port ${port} is in use, trying port ${port + 1}...`);
+      port = port + 1;
+      server = expressApp.listen(port, () => {
+        console.log(`Express server running on port ${port}`);
+      });
+    } else {
+      console.error('Server error:', err);
+    }
   });
 }
 
+// Create the main window
 function createWindow() {
   // Create the browser window
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+  const windowOptions = {
+    width: 1280,
+    height: 800,
     minWidth: 1200,
     minHeight: 700,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       enableRemoteModule: false,
-      webSecurity: true
+      spellcheck: false // Performance optimization for low-end systems
     },
-    icon: path.join(__dirname, '../public/favicon.ico'),
-    titleBarStyle: 'default',
-    show: false
-  });
+    title: 'Enterprise Lead Management System',
+    show: false // Don't show until ready
+  };
 
-  // Load the app
-  if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
-    mainWindow.webContents.openDevTools();
-  } else {
-    // For production, start local server and load from it
-    startLocalServer();
-    setTimeout(() => {
-      mainWindow.loadURL('http://localhost:3001');
-    }, 1000); // Wait for server to start
+  // Only set icon in development mode
+  if (!app.isPackaged) {
+    windowOptions.icon = path.join(__dirname, '../build/icon.ico');
   }
 
-  // Show window when ready
-  mainWindow.once('ready-to-show', () => {
+  mainWindow = new BrowserWindow(windowOptions);
+
+  // Load the app
+  if (app.isPackaged) {
+    // Production: Start Express server first, then load
+    createServer();
+    setTimeout(() => {
+      mainWindow.loadURL(`http://localhost:${port}`);
+      mainWindow.show();
+    }, 500);
+  } else {
+    // Development: Load from Next.js dev server
+    mainWindow.loadURL('http://localhost:3000');
     mainWindow.show();
-  });
+    // Open DevTools in development
+    mainWindow.webContents.openDevTools();
+  }
 
   // Handle window closed
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 
-  // Create application menu
+  // Handle window ready
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+  });
+}
+
+// Create application menu
+function createMenu() {
   const template = [
     {
-      label: 'Sales Funnel',
+      label: 'File',
       submenu: [
         {
-          label: 'About Sales Funnel',
-          click: () => {
-            // Show about dialog
-          }
-        },
-        { type: 'separator' },
-        {
           label: 'Quit',
-          accelerator: 'CmdOrCtrl+Q',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
           click: () => {
             app.quit();
           }
@@ -86,46 +107,92 @@ function createWindow() {
       ]
     },
     {
-      label: 'View',
+      label: 'Edit',
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
+        { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', role: 'redo' },
         { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
+        { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
+        { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
+        { label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' },
+        { label: 'Select All', accelerator: 'CmdOrCtrl+A', role: 'selectall' }
       ]
     },
     {
-      label: 'Window',
+      label: 'View',
       submenu: [
-        { role: 'minimize' },
-        { role: 'close' }
+        { label: 'Reload', accelerator: 'CmdOrCtrl+R', role: 'reload' },
+        { label: 'Force Reload', accelerator: 'CmdOrCtrl+Shift+R', role: 'forceReload' },
+        { type: 'separator' },
+        { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', role: 'resetZoom' },
+        { label: 'Zoom In', accelerator: 'CmdOrCtrl+Plus', role: 'zoomIn' },
+        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', role: 'zoomOut' },
+        { type: 'separator' },
+        { label: 'Toggle Fullscreen', accelerator: 'F11', role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About Enterprise Lead Management System',
+          click: () => {
+            const { dialog } = require('electron');
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              title: 'About',
+              message: 'Enterprise Lead Management System',
+              detail: 'Version 2.0.0\nProfessional CRM and Lead Management Solution\n\n© 2025 V4U Technologies'
+            });
+          }
+        }
       ]
     }
   ];
+
+  // Add DevTools menu item in development
+  if (!app.isPackaged) {
+    template[2].submenu.push(
+      { type: 'separator' },
+      { label: 'Toggle Developer Tools', accelerator: 'F12', role: 'toggleDevTools' }
+    );
+  }
 
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 }
 
-// App event listeners
-app.whenReady().then(createWindow);
+// App event handlers
+app.whenReady().then(() => {
+  createWindow();
+  createMenu();
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    if (server) {
-      server.close();
+  app.on('activate', () => {
+    // On macOS, re-create window when dock icon is clicked
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
     }
+  });
+});
+
+// Quit when all windows are closed
+app.on('window-all-closed', () => {
+  // On macOS, keep app running even when all windows are closed
+  if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
+// Handle app quit
+app.on('before-quit', () => {
+  if (server) {
+    server.close();
   }
+});
+
+// Security: Prevent new window creation
+app.on('web-contents-created', (event, contents) => {
+  contents.on('new-window', (event, navigationUrl) => {
+    event.preventDefault();
+  });
 });

@@ -462,7 +462,7 @@ function migrateSavedViewFrom09To10(view: any, errors: string[]): SavedView {
   }
   
   // Remove invalid filter properties
-  const validFilterKeys = ['status', 'followUpDateStart', 'followUpDateEnd', 'searchTerm', 'discom'];
+  const validFilterKeys = ['status', 'followUpDateStart', 'followUpDateEnd', 'searchTerm'];
   const filters = migrated.filters;
   for (const key of Object.keys(filters)) {
     if (!validFilterKeys.includes(key)) {

@@ -1,4 +1,4 @@
-import { debugLogger } from './debugLogger';
+import { debugLogger, DebugCategory } from './debugLogger';
 
 /**
  * Centralized date utilities for DD-MM-YYYY format handling
@@ -20,7 +20,7 @@ export function parseDateFromDDMMYYYY(dateString: string): Date | null {
 
   const validation = validateDateString(dateString);
   if (!validation.valid) {
-    debugLogger.warn('Invalid date string:', dateString, validation.error);
+    debugLogger.warn(DebugCategory.VALIDATION, 'Invalid date string:', { dateString, error: validation.error });
     return null;
   }
 
@@ -29,7 +29,7 @@ export function parseDateFromDDMMYYYY(dateString: string): Date | null {
   
   // Verify the date is valid (handles edge cases like Feb 30)
   if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
-    debugLogger.warn('Invalid calendar date:', dateString);
+    debugLogger.warn(DebugCategory.VALIDATION, 'Invalid calendar date:', dateString);
     return null;
   }
 

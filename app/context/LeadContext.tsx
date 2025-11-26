@@ -2,7 +2,8 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { parseDateFromDDMMYYYY } from '../utils/dateUtils';
-import { Lead, LeadFilters, SavedView, LeadContextType, ColumnConfig } from '../types/shared';
+import { Lead, LeadFilters, SavedView, LeadContextType, ColumnConfig, Activity } from '../types/shared';
+import { getEmployeeName } from '../utils/employeeStorage';
 
 // Helper function to format today's date as DD-MM-YYYY
 const todayDDMMYYYY = () => {
@@ -15,11 +16,19 @@ const todayDDMMYYYY = () => {
 
 const LeadContext = createContext<LeadContextType | undefined>(undefined);
 
+// Non-searchable fields to avoid performance issues and irrelevant data
+const NON_SEARCHABLE_KEYS = ['id', 'isDeleted', 'isDone', 'isUpdated', 'activities', 'mobileNumbers'];
+
 export function LeadProvider({ children }: { children: ReactNode }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
   const [skipPersistence, setSkipPersistence] = useState(false);
+
+  // Helper function to extract digits from a string
+  const extractDigits = (str: string | undefined | null): string => {
+    return str ? str.replace(/[^0-9]/g, '') : '';
+  };
 
   // Helper function to parse dates from various formats
   const toDate = (v?: string) => {
@@ -164,12 +173,24 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
   };
   
-  const addActivity = (leadId: string, description: string) => {
-    const newActivity = {
+  const addActivity = (
+    leadId: string, 
+    description: string, 
+    options?: {
+      activityType?: Activity['activityType'],
+      duration?: number,
+      metadata?: Record<string, any>
+    }
+  ) => {
+    const newActivity: Activity = {
       id: crypto.randomUUID(),
       leadId,
       description,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      activityType: options?.activityType || 'note',
+      employeeName: getEmployeeName() || 'Unknown',
+      duration: options?.duration || undefined,
+      metadata: options?.metadata
     };
     
     setLeads(prev => 
@@ -187,6 +208,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
   };
   
+  // Note: Filter state persistence for the dashboard is handled at the component level using localStorage, not through this context
   const getFilteredLeads = useCallback((filters: LeadFilters): Lead[] => {
     if (process.env.NODE_ENV === 'development') {
       console.log('🔍 getFilteredLeads called with filters:', filters);
@@ -250,20 +272,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         console.warn('Invalid followUpDate', lead.id, lead.followUpDate);
       }
       
-      // Filter by discom - robust comparison
-      if (filters.discom && filters.discom !== '') {
-        const leadDiscom = String(lead.discom || '').trim().toUpperCase();
-        const filterDiscom = String(filters.discom).trim().toUpperCase();
-        
-        if (leadDiscom !== filterDiscom) {
-          if (process.env.NODE_ENV === 'development') {
-            console.log('❌ Lead filtered out (discom):', lead.clientName || lead.kva, 'lead discom:', leadDiscom, 'filter:', filterDiscom);
-          }
-          return false;
-        }
-      }
-      
-      // Search term (search in name, company, email, notes, etc.)
+      // Search term (search in all lead properties dynamically)
       if (filters.searchTerm) {
         const searchTerm = filters.searchTerm.toLowerCase();
         
@@ -286,9 +295,21 @@ export function LeadProvider({ children }: { children: ReactNode }) {
               }
             }
           }
+          
+          // Also search in consumer number digits
+          if (extractDigits(lead.consumerNumber).includes(filters.searchTerm)) {
+            if (process.env.NODE_ENV === 'development') {
+              console.log('✅ Lead matches consumer number search:', lead.clientName || lead.kva);
+            }
+            return true;
+          }
         }
         
-        // Regular text search
+        // Dynamic text search through all lead properties
+        const nonSearchableKeys = NON_SEARCHABLE_KEYS;
+        const searchableValues: string[] = [];
+        
+        // Include all mobile numbers and mobile names explicitly for compatibility
         const allMobileNumbers = [
           lead.mobileNumber, // backward compatibility
           ...(lead.mobileNumbers || []).map(m => m.number)
@@ -296,20 +317,33 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         
         const allMobileNames = (lead.mobileNumbers || []).map(m => m.name).filter(Boolean);
         
-        const searchableFields = [
-          lead.clientName,
-          lead.company,
-          ...allMobileNumbers,
-          ...allMobileNames,
-          lead.consumerNumber,
-          lead.kva,
-          lead.discom,
-          lead.companyLocation,
-          lead.notes,
-          lead.finalConclusion
-        ].filter(Boolean).map(field => field?.toLowerCase());
+        // Add mobile numbers and names to searchable values
+        searchableValues.push(...allMobileNumbers.map(num => num.toLowerCase()));
+        searchableValues.push(...allMobileNames.map(name => name.toLowerCase()));
         
-        const matches = searchableFields.some(field => field?.includes(searchTerm));
+        // Iterate through all enumerable properties of the lead object
+        Object.entries(lead).forEach(([key, value]) => {
+          // Skip non-searchable fields
+          if (nonSearchableKeys.includes(key)) {
+            return;
+          }
+          
+          // Handle different value types
+          if (value !== null && value !== undefined) {
+            if (Array.isArray(value)) {
+              // Skip arrays - we handle mobileNumbers specially above
+              return;
+            } else if (typeof value === 'object') {
+              // Skip objects to avoid performance issues
+              return;
+            } else {
+              // Handle primitives (string, number, boolean, date)
+              searchableValues.push(String(value).toLowerCase());
+            }
+          }
+        });
+        
+        const matches = searchableValues.some(value => value.includes(searchTerm));
         if (!matches) {
           if (process.env.NODE_ENV === 'development') {
             console.log('❌ Lead filtered out (search term):', lead.clientName || lead.kva);

@@ -34,6 +34,7 @@ interface LeadTableProps {
   headerEditable?: boolean; // Enable header editing
   onColumnAdded?: (column: any) => void; // Column management callbacks
   onColumnDeleted?: (fieldKey: string) => void;
+  highlightedLeadId?: string | null;
 }
 
 const LeadTable = React.memo(function LeadTable({ 
@@ -53,7 +54,8 @@ const LeadTable = React.memo(function LeadTable({
   validationErrors = {},
   headerEditable = true,
   onColumnAdded,
-  onColumnDeleted
+  onColumnDeleted,
+  highlightedLeadId
 }: LeadTableProps) {
   const { leads: contextLeads, getFilteredLeads } = useLeads();
   const { getDisplayName, updateHeader, headerConfig } = useHeaders();
@@ -282,9 +284,10 @@ const LeadTable = React.memo(function LeadTable({
       // Check if table rows are rendering correctly after a short delay
       const checkTimeout = setTimeout(() => {
         const tableRows = document.querySelectorAll('tbody tr');
-        const visibleRows = Array.from(tableRows).filter(row => 
-          row.offsetHeight > 0 && row.offsetWidth > 0
-        );
+        const visibleRows = Array.from(tableRows).filter(row => {
+          const htmlRow = row as HTMLElement;
+          return htmlRow.offsetHeight > 0 && htmlRow.offsetWidth > 0;
+        });
         
         // If we have leads but no visible rows, virtualization might be broken
         if (sortedLeads.length > 0 && visibleRows.length === 0) {
@@ -423,18 +426,26 @@ const LeadTable = React.memo(function LeadTable({
       setMobileModalOpen: (leadId: string | null) => void;
       getMobileNumbers: (lead: Lead) => any[];
       getMainMobileNumber: (lead: Lead) => string;
+      highlightedLeadId?: string | null;
     };
   }>(({ index, style, data }) => {
     const lead = data.leads[index];
     if (!lead) return null;
 
+    // Apply virtual scrolling styles conditionally to avoid linting warnings
+    const rowProps: React.HTMLAttributes<HTMLTableRowElement> = {
+      className: `cursor-pointer transition-all duration-300 hover:bg-gray-50 ${lead.id === data.highlightedLeadId ? 'bg-blue-50 border-l-4 border-blue-400 shadow-sm' : ''}`,
+      onClick: () => data.onLeadClick && data.onLeadClick(lead),
+    };
+
+    // Only add style prop when virtual scrolling is active
+    if (style) {
+       
+      rowProps.style = style;
+    }
+
     return (
-      <tr
-        key={lead.id}
-        style={style}
-        className="cursor-pointer hover:bg-gray-50 transition-colors duration-150"
-        onClick={() => data.onLeadClick && data.onLeadClick(lead)}
-      >
+      <tr key={lead.id} {...rowProps}>
         {data.onLeadSelection && (
           <td className="px-0.5 py-0.5 whitespace-nowrap">
             <div className="w-9 h-8 flex items-center justify-center">
@@ -733,6 +744,7 @@ const LeadTable = React.memo(function LeadTable({
                 setMobileModalOpen,
                 getMobileNumbers,
                 getMainMobileNumber,
+                highlightedLeadId,
               }}
             >
               {LeadRow}
@@ -762,6 +774,7 @@ const LeadTable = React.memo(function LeadTable({
                     setMobileModalOpen,
                     getMobileNumbers,
                     getMainMobileNumber,
+                    highlightedLeadId,
                   }}
                 />
               ))}

@@ -1,19 +1,40 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense, useCallback } from 'react';
 import { useLeads } from '../context/LeadContext';
 import type { Lead } from '../types/shared';
 import { useRouter, useSearchParams } from 'next/navigation';
-import LeadTable from '../components/LeadTable';
+import EditableTable from '../components/EditableTable';
+import { validateLeadField } from '../hooks/useValidation';
+import { useColumns } from '../context/ColumnContext';
+
+const LeadDetailModal = lazy(() => import('../components/LeadDetailModal'));
+const LoadingSpinner = lazy(() => import('../components/LoadingSpinner'));
 
 export default function FollowUpMandatePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { leads, deleteLead } = useLeads();
+  const { leads, deleteLead, updateLead, addActivity } = useLeads();
+  const { getVisibleColumns } = useColumns();
   const [activeTab, setActiveTab] = useState<'pending' | 'signed'>('pending');
-  const [selectedLeads, setSelectedLeads] = useState<Set<string>>(new Set());
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [showLeadModal, setShowLeadModal] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<Record<string, Record<string, string>>>({});
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('success');
+
+  // Show toast notification
+  const showToastNotification = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToastMessage(message);
+    setToastType(type);
+    setShowToast(true);
+    
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      setShowToast(false);
+    }, 3000);
+  }, []);
 
   // Handle URL parameters to set the correct tab when returning from add-lead form
   useEffect(() => {
@@ -37,18 +58,20 @@ export default function FollowUpMandatePage() {
   // Modal functions
   const openModal = (lead: Lead) => {
     setSelectedLead(lead);
-    setIsModalOpen(true);
+    setShowLeadModal(true);
+    document.body.style.overflow = 'hidden';
   };
 
   const closeModal = () => {
     setSelectedLead(null);
-    setIsModalOpen(false);
+    setShowLeadModal(false);
+    document.body.style.overflow = 'unset';
   };
 
   // Handle ESC key to close modal
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && isModalOpen) {
+      if (event.key === 'Escape' && showLeadModal) {
         closeModal();
       }
     };
@@ -57,7 +80,7 @@ export default function FollowUpMandatePage() {
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isModalOpen]);
+  }, [showLeadModal]);
 
   // Handle modal return from edit form
   useEffect(() => {
@@ -78,7 +101,8 @@ export default function FollowUpMandatePage() {
       const lead = leads.find(l => l.id === leadId);
       if (lead) {
         setSelectedLead(lead);
-        setIsModalOpen(true);
+        setShowLeadModal(true);
+        document.body.style.overflow = 'hidden';
       }
       
       // Clean up URL parameters while preserving tab parameter
@@ -98,38 +122,114 @@ export default function FollowUpMandatePage() {
     openModal(lead);
   };
 
-  // Handle lead selection
-  const handleLeadSelection = (leadId: string, checked: boolean) => {
-    const newSelected = new Set(selectedLeads);
-    if (checked) {
-      newSelected.add(leadId);
-    } else {
-      newSelected.delete(leadId);
-    }
-    setSelectedLeads(newSelected);
-  };
 
-  // Handle select all
-  const handleSelectAll = (checked: boolean) => {
-    const currentLeads = activeTab === 'pending' ? documentation : mandateSent;
-    if (checked) {
-      setSelectedLeads(new Set(currentLeads.map(lead => lead.id)));
-    } else {
-      setSelectedLeads(new Set());
-    }
-  };
+  // Handle cell update
+  const handleCellUpdate = useCallback(async (leadId: string, field: string, value: string) => {
+    try {
+      // Find the lead
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) {
+        throw new Error('Lead not found');
+      }
 
-  // Handle bulk delete - no password protection
-  const handleBulkDeleteClick = () => {
-    if (selectedLeads.size === 0) return;
-    
-    // Direct deletion without password protection
-    selectedLeads.forEach(leadId => {
-      deleteLead(leadId);
-    });
-    
-    setSelectedLeads(new Set());
-  };
+      // Get current column configuration to validate dynamic fields
+      const visibleColumns = getVisibleColumns();
+      const columnConfig = visibleColumns.find(col => col.fieldKey === field);
+      
+      if (process.env.NODE_ENV === 'development') {
+        console.log('🔧 Cell update debug:', { leadId, field, value, columnConfig });
+      }
+      
+      // Validate the field (including custom columns)
+      const error = validateLeadField(field as keyof Lead, value, lead, columnConfig);
+      
+      if (error) {
+        // Set validation error
+        setValidationErrors(prev => ({
+          ...prev,
+          [leadId]: {
+            ...prev[leadId],
+            [field]: error
+          }
+        }));
+        throw new Error(error);
+      }
+
+      // Clear validation error if validation passes
+      setValidationErrors(prev => {
+        const newErrors = { ...prev };
+        if (newErrors[leadId]) {
+          const leadErrors = { ...newErrors[leadId] };
+          delete leadErrors[field];
+          if (Object.keys(leadErrors).length === 0) {
+            delete newErrors[leadId];
+          } else {
+            newErrors[leadId] = leadErrors;
+          }
+        }
+        return newErrors;
+      });
+
+      // Handle special formatting for different field types
+      let formattedValue = value;
+      
+      // Handle mobileNumbers field (JSON string)
+      if (field === 'mobileNumbers' && value) {
+        try {
+          const parsed = JSON.parse(value);
+          formattedValue = JSON.stringify(parsed);
+        } catch (e) {
+          throw new Error('Invalid mobile numbers format');
+        }
+      } else if (columnConfig?.type === 'date' && value) {
+        // Format date fields consistently
+        const formatDateToDDMMYYYY = (dateStr: string) => {
+          if (!dateStr) return '';
+          const date = new Date(dateStr);
+          if (isNaN(date.getTime())) return dateStr;
+          return date.toLocaleDateString('en-GB');
+        };
+        formattedValue = formatDateToDDMMYYYY(value);
+      }
+
+      // Update the lead with proper field access using safe property assignment
+      let updatedLead = {
+        ...lead,
+        [field]: formattedValue,
+        lastActivityDate: new Date().toLocaleDateString('en-GB') // DD-MM-YYYY format
+      } as Lead & Record<string, any>; // Allow dynamic properties
+
+      // Clear follow-up date when status changes to "Work Alloted"
+      if (field === 'status' && value === 'Work Alloted') {
+        updatedLead = { ...updatedLead, followUpDate: '' };
+      }
+
+      // Only touch activity for important field changes
+      const shouldTouchActivity = ['status', 'followUpDate', 'notes'].includes(field);
+      await updateLead(updatedLead, { touchActivity: shouldTouchActivity });
+      
+      // Auto-log status changes
+      if (field === 'status') {
+        const oldStatus = lead.status;
+        addActivity(leadId, `Status changed from ${oldStatus} to ${value}`, {
+          activityType: 'status_change',
+          metadata: { oldStatus, newStatus: value }
+        });
+
+        if (value === 'Work Alloted') {
+          showToastNotification('Status changed to WAO. Follow-up date has been automatically cleared.', 'info');
+          return; // Prevent generic success toast
+        }
+      }
+      
+      showToastNotification('Lead updated successfully!', 'success');
+    } catch (error) {
+      console.error('Error updating cell:', error);
+      showToastNotification(error instanceof Error ? error.message : 'Failed to update lead', 'error');
+      throw error;
+    }
+  }, [leads, updateLead, showToastNotification, getVisibleColumns, addActivity]);
+
 
   // Handle edit lead
   const handleEditLead = (lead: Lead) => {
@@ -145,25 +245,6 @@ export default function FollowUpMandatePage() {
     router.push(`/add-lead?mode=edit&id=${lead.id}&from=${sourcePage}`);
   };
 
-  // Action buttons for the table
-  const renderActionButtons = (lead: any) => (
-    <button
-      onClick={(e) => {
-        e.stopPropagation();
-        localStorage.setItem('editingLead', JSON.stringify(lead));
-        // Include source page information for proper navigation back
-        const sourcePage = activeTab === 'pending' ? 'documentation' : 'mandate-sent';
-        router.push(`/add-lead?mode=edit&id=${lead.id}&from=${sourcePage}`);
-      }}
-      className={`px-3 py-1 text-sm rounded-md transition-colors ${
-        activeTab === 'pending' 
-          ? 'bg-orange-600 hover:bg-orange-700 text-white' 
-          : 'bg-green-600 hover:bg-green-700 text-white'
-      }`}
-    >
-      Update Status
-    </button>
-  );
 
   return (
     <div className="container mx-auto px-4 py-2">
@@ -215,30 +296,14 @@ export default function FollowUpMandatePage() {
             <div>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold text-black">Documentation</h2>
-                <div className="flex items-center space-x-3">
-                  <button
-                    onClick={() => handleSelectAll(selectedLeads.size === documentation.length ? false : true)}
-                    className="px-3 py-1 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
-                  >
-                    {selectedLeads.size === documentation.length ? 'Deselect All' : 'Select All'}
-                  </button>
-                  {selectedLeads.size > 0 && (
-                    <button
-                      onClick={handleBulkDeleteClick}
-                      className="px-3 py-1 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-                    >
-                      Delete Selected ({selectedLeads.size})
-                    </button>
-                  )}
-                </div>
               </div>
-              <LeadTable
+              <EditableTable
                 leads={documentation}
                 onLeadClick={handleLeadClick}
-                selectedLeads={selectedLeads}
-                onLeadSelection={handleLeadSelection}
-                showActions={true}
-                actionButtons={renderActionButtons}
+                editable={true}
+                onCellUpdate={handleCellUpdate}
+                validationErrors={validationErrors}
+                headerEditable={false}
                 emptyMessage="No leads waiting for documents"
               />
             </div>
@@ -248,30 +313,14 @@ export default function FollowUpMandatePage() {
             <div>
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold text-black">Mandate Sent</h2>
-                <div className="flex items-center space-x-3">
-                  <button
-                    onClick={() => handleSelectAll(selectedLeads.size === mandateSent.length ? false : true)}
-                    className="px-3 py-1 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
-                  >
-                    {selectedLeads.size === mandateSent.length ? 'Deselect All' : 'Select All'}
-                  </button>
-                  {selectedLeads.size > 0 && (
-                    <button
-                      onClick={handleBulkDeleteClick}
-                      className="px-3 py-1 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-                    >
-                      Delete Selected ({selectedLeads.size})
-                    </button>
-                  )}
-                </div>
               </div>
-              <LeadTable
+              <EditableTable
                 leads={mandateSent}
                 onLeadClick={handleLeadClick}
-                selectedLeads={selectedLeads}
-                onLeadSelection={handleLeadSelection}
-                showActions={true}
-                actionButtons={renderActionButtons}
+                editable={true}
+                onCellUpdate={handleCellUpdate}
+                validationErrors={validationErrors}
+                headerEditable={false}
                 emptyMessage="No leads with mandate sent"
               />
             </div>
@@ -280,44 +329,54 @@ export default function FollowUpMandatePage() {
       </div>
 
       {/* Modal */}
-      {isModalOpen && selectedLead && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-5 mx-auto p-2 border w-11/12 md:w-5/6 lg:w-4/5 xl:w-3/4 shadow-lg rounded-md bg-white">
-            <div className="mt-1">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="text-xs font-medium text-black">Lead Details</h3>
-                <button
-                  onClick={closeModal}
-                  className="text-gray-400 hover:text-black transition-colors"
-                  title="Close modal"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <div className="p-4">
-                <p className="text-sm text-gray-600">Lead details for: {selectedLead.clientName}</p>
-                <div className="mt-4 flex space-x-2">
-                  <button
-                    onClick={closeModal}
-                    className="px-3 py-1 text-xs font-medium text-black bg-gray-100 border border-gray-300 rounded hover:bg-gray-200"
-                  >
-                    Close
-                  </button>
-                  {!selectedLead.isDeleted && (
-                    <button
-                      onClick={() => {
-                        closeModal();
-                        handleEditLead(selectedLead);
-                      }}
-                      className="px-3 py-1 text-xs font-medium text-white bg-blue-600 border border-transparent rounded hover:bg-blue-700"
-                    >
-                      Edit Lead
-                    </button>
-                  )}
-                </div>
-              </div>
+      {showLeadModal && selectedLead && (
+        <Suspense fallback={<LoadingSpinner text="Loading..." />}>
+          <LeadDetailModal
+            isOpen={showLeadModal}
+            onClose={() => {
+              setShowLeadModal(false);
+              document.body.style.overflow = 'unset';
+            }}
+            lead={selectedLead}
+            onEdit={handleEditLead}
+          />
+        </Suspense>
+      )}
+
+      {/* Toast Notification */}
+      {showToast && (
+        <div className="fixed top-4 right-4 z-50">
+          <div className={`px-6 py-4 rounded-lg shadow-lg text-white font-medium ${
+            toastType === 'success' ? 'bg-green-600' :
+            toastType === 'error' ? 'bg-red-600' :
+            'bg-blue-600'
+          }`}>
+            <div className="flex items-center space-x-3">
+              {toastType === 'success' && (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+              {toastType === 'error' && (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              )}
+              {toastType === 'info' && (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
+              <span>{toastMessage}</span>
+              <button
+                onClick={() => setShowToast(false)}
+                className="ml-4 text-white hover:text-gray-200"
+                title="Close notification"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
           </div>
         </div>

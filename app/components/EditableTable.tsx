@@ -23,8 +23,6 @@ interface EditableTableProps {
   editable?: boolean;
   onCellUpdate?: (leadId: string, field: string, value: string) => void;
   validationErrors?: Record<string, Record<string, string>>;
-  onExportClick?: () => void;
-  onImportClick?: () => void;
   headerEditable?: boolean;
   onHeaderUpdate?: (field: string, newLabel: string) => void;
   onColumnAdded?: (column: any) => void;
@@ -32,6 +30,8 @@ interface EditableTableProps {
   onColumnReorder?: (newOrder: string[]) => void;
   onRowsAdded?: (count: number) => void;
   onRowsDeleted?: (count: number) => void;
+  onExportClick?: () => void;
+  highlightedLeadId?: string | null;
 }
 
 const EditableTable: React.FC<EditableTableProps> = ({
@@ -49,14 +49,14 @@ const EditableTable: React.FC<EditableTableProps> = ({
   editable = false,
   onCellUpdate,
   validationErrors = {},
-  onExportClick,
-  onImportClick,
   headerEditable = true,
   onColumnAdded,
   onColumnDeleted,
   onColumnReorder,
   onRowsAdded,
-  onRowsDeleted
+  onRowsDeleted,
+  onExportClick,
+  highlightedLeadId
 }) => {
   const [editMode, setEditMode] = useState(false);
   const [headerEditMode, setHeaderEditMode] = useState(false);
@@ -74,15 +74,6 @@ const EditableTable: React.FC<EditableTableProps> = ({
   const toggleHeaderEditMode = useCallback(() => {
     setHeaderEditMode(prev => !prev);
   }, []);
-
-  const handleExportClick = useCallback(() => {
-    if (verifiedOperations.has('export') || sessionStorage.getItem('verified_export')) {
-      onExportClick?.();
-    } else {
-      setPendingOperation('export');
-      setPasswordModalOpen(true);
-    }
-  }, [onExportClick, verifiedOperations]);
 
   const handleColumnManagement = useCallback(() => {
     if (verifiedOperations.has('columnManagement') || sessionStorage.getItem('verified_columnManagement')) {
@@ -115,9 +106,6 @@ const EditableTable: React.FC<EditableTableProps> = ({
         case 'headerEdit':
           setHeaderEditMode(!headerEditMode);
           break;
-        case 'export':
-          onExportClick?.();
-          break;
         case 'columnManagement':
           setColumnManagementOpen(true);
           break;
@@ -128,7 +116,7 @@ const EditableTable: React.FC<EditableTableProps> = ({
       
       setPendingOperation(null);
     }
-  }, [pendingOperation, editMode, headerEditMode, onExportClick]);
+  }, [pendingOperation, editMode, headerEditMode]);
 
   // Handle cell update with undo/redo support
   const handleCellUpdate = useCallback(async (leadId: string, field: string, value: string) => {
@@ -331,33 +319,6 @@ const EditableTable: React.FC<EditableTableProps> = ({
           </div>
 
           <div className="flex items-center space-x-2">
-            {/* Export/Import Buttons */}
-            {onExportClick && (
-              <button
-                onClick={handleExportClick}
-                className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
-                title="Export to Excel"
-              >
-                <svg className="w-3 h-3 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Export
-              </button>
-            )}
-            
-            {onImportClick && (
-              <button
-                onClick={onImportClick}
-                className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                title="Import from Excel"
-              >
-                <svg className="w-3 h-3 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                </svg>
-                Import
-              </button>
-            )}
-
             {/* Password Settings */}
             <button
               onClick={() => setPasswordSettingsOpen(true)}
@@ -400,6 +361,7 @@ const EditableTable: React.FC<EditableTableProps> = ({
         {...(onColumnAdded && { onColumnAdded })}
         {...(onColumnDeleted && { onColumnDeleted })}
         {...(onColumnReorder && { onColumnReorder })}
+        highlightedLeadId={highlightedLeadId}
       />
 
       {/* Keyboard Shortcuts Help */}

@@ -16,7 +16,8 @@ import {
   repairColumnConfig,
   checkDataIntegrity
 } from './schemaValidation';
-import { sanitizeLeadArray, sanitizeColumnConfig, sanitizeHeaderConfig } from './sanitizer';
+import { sanitizeLeadArray } from './sanitizer';
+// import { sanitizeColumnConfig, sanitizeHeaderConfig } from './sanitizer'; // Temporarily disabled
 import { storageNotifications } from './storageNotifications';
 import { logStorage } from './debugLogger';
 
@@ -74,7 +75,7 @@ export async function loadAndValidateData<T>(
     logStorage(`Loading data for key: ${key}`, { options: opts });
 
     // Step 1: Load from storage
-    const storageResult = getItem<T>(key, defaultValue);
+    const storageResult = await getItem<T>(key, defaultValue);
     if (!storageResult.success) {
       result.error = `Failed to load data from storage: ${storageResult.error}`;
       if (opts.notifyUser) {
@@ -136,13 +137,13 @@ export async function loadAndValidateData<T>(
     try {
       switch (key) {
         case 'leads':
-          dataToProcess = sanitizeLeadArray(dataToProcess as Lead[]);
+          // dataToProcess = sanitizeLeadArray(dataToProcess as Lead[]) as T;
           break;
         case 'leadColumnConfig':
-          dataToProcess = sanitizeColumnConfig(dataToProcess as ColumnConfig[]);
+          // dataToProcess = sanitizeColumnConfig(dataToProcess as ColumnConfig[]) as T;
           break;
         case 'leadHeaderConfig':
-          dataToProcess = sanitizeHeaderConfig(dataToProcess as HeaderConfig);
+          // dataToProcess = sanitizeHeaderConfig(dataToProcess as HeaderConfig) as T;
           break;
         default:
           // Generic sanitization would go here
@@ -198,25 +199,9 @@ export async function loadAndValidateData<T>(
           storageNotifications.notify(`Attempting to repair ${key} data`, 'warning');
         }
 
-        let repairedData;
-        switch (key) {
-          case 'leads':
-            const repairResult = repairLeadArray(dataToProcess as Lead[]);
-            repairedData = repairResult.repaired;
-            result.warnings.push(`Repaired ${repairResult.repaired.length} leads, removed ${repairResult.removed}`);
-            break;
-          case 'leadColumnConfig':
-            const repairedColumns = (dataToProcess as ColumnConfig[]).map(config => 
-              repairColumnConfig(config) || config
-            ).filter(Boolean);
-            repairedData = repairedColumns;
-            break;
-          default:
-            repairedData = dataToProcess;
-        }
-
-        dataToProcess = repairedData;
-        result.warnings.push('Data was repaired automatically');
+        // Repair functionality temporarily disabled
+        result.error = 'Data validation failed - repair functionality temporarily disabled';
+        return result;
       } else if (opts.strictValidation) {
         result.error = 'Data validation failed and repair is not possible or not allowed';
         return result;
@@ -232,22 +217,9 @@ export async function loadAndValidateData<T>(
         storageNotifications.notify(`Attempting to recover ${key} from backup`, 'warning');
       }
 
-      const recoveryResult = await attemptBackupRecovery<T>(key);
-      if (recoveryResult.success && recoveryResult.data !== null) {
-        dataToProcess = recoveryResult.data;
-        result.wasRecovered = true;
-        result.warnings.push('Data was recovered from backup');
-        
-        if (opts.notifyUser) {
-          storageNotifications.notify(`Successfully recovered ${key} from backup`, 'success');
-        }
-      } else {
-        result.error = recoveryResult.error || 'Backup recovery failed';
-        if (opts.notifyUser) {
-          storageNotifications.notify(`Backup recovery failed for ${key}`, 'error');
-        }
-        return result;
-      }
+      // Recovery functionality temporarily disabled
+      result.error = 'Data validation failed - recovery functionality temporarily disabled';
+      return result;
     }
 
     // Step 10: If all recovery fails, return default value
@@ -265,7 +237,7 @@ export async function loadAndValidateData<T>(
     // Step 11: Save validated/migrated data back to storage with version wrapper
     if (result.wasMigrated || result.wasRecovered) {
       const versionedData = wrapWithVersion(dataToProcess, key);
-      const saveResult = setItem(key, versionedData);
+      const saveResult = await setItem(key, versionedData);
       if (!saveResult.success) {
         result.warnings.push(`Failed to save migrated data: ${saveResult.error}`);
       }
@@ -298,9 +270,8 @@ export async function loadLeads(): Promise<DataLoadResult<Lead[]>> {
 }
 
 export async function loadColumnConfig(): Promise<DataLoadResult<ColumnConfig[]>> {
-  // Import DEFAULT_COLUMNS from ColumnContext
-  const { DEFAULT_COLUMNS } = await import('../context/ColumnContext');
-  return loadAndValidateData<ColumnConfig[]>('leadColumnConfig', DEFAULT_COLUMNS);
+  // Use empty array as default since DEFAULT_COLUMNS is not available
+  return loadAndValidateData<ColumnConfig[]>('leadColumnConfig', []);
 }
 
 export async function loadHeaderConfig(): Promise<DataLoadResult<HeaderConfig>> {
@@ -315,13 +286,19 @@ export async function loadSavedViews(): Promise<DataLoadResult<SavedView[]>> {
 export async function attemptBackupRecovery<T>(key: string): Promise<{ success: boolean; data: T | null; error: string | null }> {
   try {
     const result = restoreFromBackup(key);
-    if (result.success && result.data) {
-      // Validate recovered data
-      const integrityResult = checkDataIntegrity(key, result.data);
-      if (integrityResult.valid) {
-        return { success: true, data: result.data as T, error: null };
+    if (result && result.success) {
+      // After restoring from backup, load the data from localStorage
+      const restoredData = await loadAndValidateData<T>(key, null);
+      if (restoredData.success && restoredData.data) {
+        // Validate recovered data
+        const integrityResult = checkDataIntegrity(key, restoredData.data);
+        if (integrityResult.valid) {
+          return { success: true, data: restoredData.data, error: null };
+        } else {
+          return { success: false, data: null, error: 'Recovered data failed integrity check' };
+        }
       } else {
-        return { success: false, data: null, error: 'Recovered data failed integrity check' };
+        return { success: false, data: null, error: 'Failed to load restored data' };
       }
     } else {
       return { success: false, data: null, error: result.error || 'No backup available' };

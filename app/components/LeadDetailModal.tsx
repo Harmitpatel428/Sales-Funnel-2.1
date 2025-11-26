@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { Lead } from '../types/shared';
 import { useColumns } from '../context/ColumnContext';
 import QuickBenefitModal from './QuickBenefitModal';
@@ -10,7 +10,7 @@ interface LeadDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   onEdit: (lead: Lead) => void;
-  onDelete: (lead: Lead) => void;
+  onDelete?: (lead: Lead) => void;
 }
 
 export default function LeadDetailModal({ 
@@ -27,6 +27,43 @@ export default function LeadDetailModal({
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [consultantName, setConsultantName] = useState(localStorage.getItem('consultantName') || 'સબસીડી કન્સલ્ટન્ટ');
   const [showQuickBenefitModal, setShowQuickBenefitModal] = useState(false);
+
+  // Refs to track modal states for stable ESC key handler
+  const showScriptModalRef = useRef(false);
+  const showSettingsModalRef = useRef(false);
+  const showQuickBenefitModalRef = useRef(false);
+
+  // Update refs when modal states change
+  useEffect(() => {
+    showScriptModalRef.current = showScriptModal;
+  }, [showScriptModal]);
+
+  useEffect(() => {
+    showSettingsModalRef.current = showSettingsModal;
+  }, [showSettingsModal]);
+
+  useEffect(() => {
+    showQuickBenefitModalRef.current = showQuickBenefitModal;
+  }, [showQuickBenefitModal]);
+
+  // ESC key handler to close LeadDetailModal with proper event handling
+  // Stable listener that doesn't re-attach on modal state changes
+  useEffect(() => {
+    if (!isOpen) return;
+    
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        // Only close LeadDetailModal if no child modals are open
+        if (!showScriptModalRef.current && !showSettingsModalRef.current && !showQuickBenefitModalRef.current) {
+          e.stopPropagation();
+          onClose();
+        }
+      }
+    };
+    
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -180,7 +217,8 @@ V4U Biz Solutions, અમદાવાદ માંથી ${consultantName} વ�
           </div>
 
           {/* Modal Content */}
-          <div className="space-y-2">
+          <div className="max-h-[80vh] overflow-y-auto">
+            <div className="space-y-2">
             {/* Permanent Fields Section */}
             <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-2">
               {/* Mobile Numbers */}
@@ -250,10 +288,10 @@ V4U Biz Solutions, અમદાવાદ માંથી ${consultantName} વ�
                 </p>
               </div>
 
-              {/* Company Location */}
+              {/* Address */}
               {lead.companyLocation && (
                 <div className="bg-gray-50 p-2 rounded-md">
-                  <label className="block text-xs font-medium text-black mb-1">Company Location</label>
+                  <label className="block text-xs font-medium text-black mb-1">Address</label>
                   <p className="text-xs font-medium text-black">{lead.companyLocation}</p>
                 </div>
               )}
@@ -262,7 +300,7 @@ V4U Biz Solutions, અમદાવાદ માંથી ${consultantName} વ�
               {lead.notes && (
                 <div className="bg-gray-50 p-2 rounded-md">
                   <label className="block text-xs font-medium text-black mb-1">Last Discussion</label>
-                  <p className="text-xs font-medium text-black line-clamp-3">{lead.notes}</p>
+                  <p className="text-xs font-medium text-black break-words">{lead.notes}</p>
                 </div>
               )}
 
@@ -358,26 +396,11 @@ V4U Biz Solutions, અમદાવાદ માંથી ${consultantName} વ�
             {lead.finalConclusion && (
               <div className="bg-gray-50 p-2 rounded-md">
                 <label className="block text-xs font-medium text-black mb-1">Final Conclusion</label>
-                <p className="text-xs font-medium text-black line-clamp-3">{lead.finalConclusion}</p>
+                <p className="text-xs font-medium text-black break-words">{lead.finalConclusion}</p>
               </div>
             )}
 
-            {/* Recent Activities - Compact */}
-            {lead.activities && lead.activities.filter(activity => activity.description !== 'Lead created').length > 0 && (
-              <div className="bg-gray-50 p-2 rounded-md">
-                <label className="block text-xs font-medium text-black mb-1">Recent Activities</label>
-                <div className="space-y-1 max-h-24 overflow-y-auto">
-                  {lead.activities.filter(activity => activity.description !== 'Lead created').slice(-3).map((activity) => (
-                    <div key={activity.id} className="bg-white p-1 rounded text-xs">
-                      <p className="text-black font-medium">{activity.description}</p>
-                      <p className="text-black">
-                        {new Date(activity.timestamp).toLocaleDateString()}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            </div>
           </div>
           
           {/* Modal Footer */}
@@ -407,7 +430,7 @@ Status: ${lead.status}
 Unit Type: ${lead.unitType}
 Follow-up Date: ${lead.followUpDate ? formatDateToDDMMYYYY(lead.followUpDate) : 'N/A'}
 Last Activity: ${formatDateToDDMMYYYY(lead.lastActivityDate)}
-${lead.companyLocation ? `Location: ${lead.companyLocation}` : ''}
+${lead.companyLocation ? `Address: ${lead.companyLocation}` : ''}
 ${lead.notes ? `Last Discussion: ${lead.notes}` : ''}
 ${lead.finalConclusion ? `Conclusion: ${lead.finalConclusion}` : ''}
 ${dynamicFieldsInfo ? `\nAdditional Information:\n${dynamicFieldsInfo}` : ''}`;
@@ -477,12 +500,14 @@ ${dynamicFieldsInfo ? `\nAdditional Information:\n${dynamicFieldsInfo}` : ''}`;
               >
                 Edit Lead
               </button>
-              <button
-                onClick={() => onDelete(lead)}
-                className="px-3 py-1 text-xs font-medium text-white bg-red-600 border border-transparent rounded hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
-              >
-                Delete Lead
-              </button>
+              {onDelete && (
+                <button
+                  onClick={() => onDelete(lead)}
+                  className="px-3 py-1 text-xs font-medium text-white bg-red-600 border border-transparent rounded hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                >
+                  Delete Lead
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -613,6 +638,11 @@ ${dynamicFieldsInfo ? `\nAdditional Information:\n${dynamicFieldsInfo}` : ''}`;
       <QuickBenefitModal
         isOpen={showQuickBenefitModal}
         onClose={() => setShowQuickBenefitModal(false)}
+        onSave={(payload) => {
+          // Handle the new template-based payload
+          console.log('Template saved:', payload.templateName, 'Content:', payload.content);
+          // You can add additional logic here if needed for template processing
+        }}
       />
     </div>
   );

@@ -81,6 +81,7 @@ const createValidLead = (): Lead => ({
     isMain: true
   }],
   mobileNumber: '9876543210',
+  unitType: 'New',
   status: 'New',
   lastActivityDate: '01-01-2024',
   followUpDate: '15-01-2024',
